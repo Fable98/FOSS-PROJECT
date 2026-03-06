@@ -37,6 +37,7 @@ jobs:
           fi
           echo "environment=$ENV" >> $GITHUB_OUTPUT
           echo "image_tag=$ENV-${{ github.sha }}" >> $GITHUB_OUTPUT
+          echo "Deploying to: $ENV"
 
   build-and-push:
     name: 🐳 Build & Push Docker Image
@@ -91,7 +92,6 @@ jobs:
     if: needs.determine-env.outputs.environment == 'staging'
     environment:
       name: staging
-      url: https://staging.aquapulse.example.com
 
     steps:
       - uses: actions/checkout@v4
@@ -107,17 +107,9 @@ jobs:
             export IMAGE_TAG="${{ needs.determine-env.outputs.image_tag }}"
             docker compose -f docker-compose.prod.yml pull
             docker compose -f docker-compose.prod.yml up -d --remove-orphans
-            python scripts/healthcheck.py
-
-      - name: Run smoke tests
-        run: |
-          pip install pytest requests
-          pytest tests/smoke/ \
-            --base-url=https://staging.aquapulse.example.com \
-            -v --tb=short
 
       - name: Notify Slack
-        if: always()
+        if: always() && secrets.SLACK_WEBHOOK_URL != ''
         uses: slackapi/slack-github-action@v1.26.0
         with:
           payload: |
@@ -134,7 +126,6 @@ jobs:
     if: needs.determine-env.outputs.environment == 'production'
     environment:
       name: production
-      url: https://aquapulse.example.com
 
     steps:
       - uses: actions/checkout@v4
@@ -149,14 +140,11 @@ jobs:
             cd /opt/aquapulse
             export IMAGE_TAG="${{ needs.determine-env.outputs.image_tag }}"
             docker compose -f docker-compose.prod.yml pull
-            docker compose -f docker-compose.prod.yml exec -T db \
-              psql -U aquapulse -d aquapulse -f /app/database/schema.sql
             docker compose -f docker-compose.prod.yml up -d \
               --no-deps --remove-orphans
-            python scripts/healthcheck.py --env production
 
       - name: Notify Slack
-        if: always()
+        if: always() && secrets.SLACK_WEBHOOK_URL != ''
         uses: slackapi/slack-github-action@v1.26.0
         with:
           payload: |

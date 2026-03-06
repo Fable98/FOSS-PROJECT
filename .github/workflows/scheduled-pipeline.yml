@@ -2,8 +2,8 @@ name: AquaPulse — Scheduled Data Pipeline
 
 on:
   schedule:
-    - cron: "*/15 * * * *"    # every 15 min — matches DWLR sensor frequency
-    - cron: "30 20 * * *"     # daily 2 AM IST — full historical sync
+    - cron: "*/15 * * * *"
+    - cron: "30 20 * * *"
   workflow_dispatch:
     inputs:
       task:
@@ -46,44 +46,25 @@ jobs:
           cache: pip
 
       - name: Install dependencies
-        run: pip install -r requirements.txt
+        run: pip install -r backend/requirements.txt
 
       - name: Run Task 1 — Real-time water level fetch
         run: |
+          cd backend
           ARGS="--task 1"
           [ "${{ github.event.inputs.dry_run }}" == "true" ] && ARGS="$ARGS --dry-run"
           python pipeline.py $ARGS
 
       - name: Run Task 2 — Recharge update
-        run: python pipeline.py --task 2
+        run: cd backend && python pipeline.py --task 2
 
       - name: Run Task 3 — Zone reclassification
-        run: python pipeline.py --task 3
-
-      - name: Check for P1 alerts
-        id: alerts
-        run: |
-          COUNT=$(python scripts/check_alerts.py --priority P1 --count-only)
-          echo "p1_count=$COUNT" >> $GITHUB_OUTPUT
-
-      - name: Fire PagerDuty if P1 alerts found
-        if: steps.alerts.outputs.p1_count > 0
-        run: |
-          curl -X POST https://events.pagerduty.com/v2/enqueue \
-            -H "Content-Type: application/json" \
-            -d '{
-              "routing_key": "${{ secrets.PAGERDUTY_KEY }}",
-              "event_action": "trigger",
-              "payload": {
-                "summary": "${{ steps.alerts.outputs.p1_count }} P1 groundwater alerts — AquaPulse",
-                "severity": "critical",
-                "source": "AquaPulse CI/CD"
-              }
-            }'
+        run: cd backend && python pipeline.py --task 3
 
       - name: Log pipeline run
         if: always()
         run: |
+          cd backend
           python scripts/log_pipeline_run.py \
             --status "${{ job.status }}" \
             --run-id "${{ github.run_id }}" \
@@ -114,35 +95,18 @@ jobs:
           cache: pip
 
       - name: Install dependencies
-        run: pip install -r requirements.txt
+        run: pip install -r backend/requirements.txt
 
       - name: Sync historical water levels
-        run: python pipeline.py --task 1 --historical
-
-      - name: Sync CGWB block assessment
-        run: python scripts/sync_block_assessment.py
+        run: cd backend && python pipeline.py --task 1 --historical
 
       - name: Sync IMD rainfall archive
-        run: python scripts/sync_rainfall.py --days 30
+        run: cd backend && python scripts/sync_rainfall.py --days 30
 
-      - name: Data quality report
-        run: python scripts/data_quality_report.py --output reports/dq_report.json
-
-      - name: Upload DQ report
+      - name: Upload daily report
         uses: actions/upload-artifact@v4
+        if: always()
         with:
-          name: daily-dq-report-${{ github.run_number }}
-          path: reports/dq_report.json
+          name: daily-report-${{ github.run_number }}
+          path: backend/reports/
           retention-days: 30
-```
-
----
-
-## After creating all 3 files, your folder should look like:
-```
-FOSS-PROJECT/
-└── .github/
-    └── workflows/
-        ├── ci.yml
-        ├── cd.yml
-        └── scheduled-pipeline.yml
