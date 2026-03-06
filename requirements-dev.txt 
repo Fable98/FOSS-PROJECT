@@ -1,0 +1,14 @@
+# In your repo root, create this file:
+touch requirements-dev.txt
+```
+
+With contents:
+```
+pytest>=7.4.0
+pytest-cov>=4.1.0
+black>=23.9.0
+isort>=5.12.0
+flake8>=6.1.0
+bandit>=1.7.5
+safety>=2.3.5
+requests>=2.31.0
