@@ -57,7 +57,7 @@ SubTerra performs **three core evaluation tasks** using live DWLR data:
 
 ## 🖥️ Screenshots
 
-> _Add screenshots here once UI is ready_
+> _Add screenshots for later_
 
 ---
 
