@@ -1,14 +1,21 @@
-
-
 # ═══════════════════════════════════════════════════════════════
 #  SubTerra — Real-Time Groundwater Evaluation Platform
 #  docker-compose.yml — Full stack local development setup
 #
 #  Usage:
-#    Start:   docker-compose up --build
-#    Stop:    docker-compose down
-#    Reset:   docker-compose down -v   (clears all data)
-#    Logs:    docker-compose logs -f <service>
+#    Start all:       docker-compose up --build
+#    Stop:            docker-compose down
+#    Reset all data:  docker-compose down -v
+#    Logs:            docker-compose logs -f <service>
+#    With pgAdmin:    docker-compose --profile tools up --build
+#
+#  Services:
+#    db        → TimescaleDB on port 5432
+#    redis     → Redis cache on port 6379
+#    backend   → FastAPI on port 8000
+#    scraper   → DWLR data pipeline (runs every 15 min)
+#    frontend  → React UI on port 3000
+#    pgadmin   → DB browser on port 5050 (--profile tools only)
 # ═══════════════════════════════════════════════════════════════
 
 services:
@@ -16,22 +23,24 @@ services:
   # ─────────────────────────────────────────────
   # 🗄️  DATABASE — PostgreSQL + TimescaleDB
   #     Stores all DWLR readings (time-series)
+  #     hypertable partitioned by 7-day chunks
   # ─────────────────────────────────────────────
   db:
     image: timescale/timescaledb:latest-pg15
     container_name: subterra_db
     restart: unless-stopped
+    env_file: .env
     environment:
-      POSTGRES_DB: subterra
-      POSTGRES_USER: subterra_user
-      POSTGRES_PASSWORD: subterra_pass
+      POSTGRES_DB:       ${POSTGRES_DB:-subterra}
+      POSTGRES_USER:     ${POSTGRES_USER:-subterra_user}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-subterra_pass}
     ports:
       - "5432:5432"
     volumes:
       - postgres_data:/var/lib/postgresql/data
-      - ./backend/app/models/init.sql:/docker-entrypoint-initdb.d/init.sql
+      - ./backend/db/init.sql:/docker-entrypoint-initdb.d/init.sql:ro
     healthcheck:
-      test: ["CMD-SHELL", "pg_isready -U subterra_user -d subterra"]
+      test: ["CMD-SHELL", "pg_isready -U ${POSTGRES_USER:-subterra_user} -d ${POSTGRES_DB:-subterra}"]
       interval: 10s
       timeout: 5s
       retries: 5
@@ -40,8 +49,8 @@ services:
 
   # ─────────────────────────────────────────────
   # 🔴  CACHE — Redis
-  #     Caches API responses, station statuses
-  #     so we don't hit India-WRIS every request
+  #     Caches API responses and station statuses
+  #     so FastAPI doesn't hit the DB every request
   # ─────────────────────────────────────────────
   redis:
     image: redis:7-alpine
@@ -61,7 +70,8 @@ services:
 
   # ─────────────────────────────────────────────
   # ⚙️  BACKEND — FastAPI
-  #     Runs all 3 algorithms + REST API
+  #     Serves REST API + runs Task 1/2/3 algorithms
+  #     API docs: http://localhost:8000/docs
   # ─────────────────────────────────────────────
   backend:
     build:
@@ -69,25 +79,20 @@ services:
       dockerfile: Dockerfile
     container_name: subterra_backend
     restart: unless-stopped
+    env_file: .env
     environment:
-      # Database
-      DATABASE_URL: postgresql://subterra_user:subterra_pass@db:5432/subterra
-      # Redis
-      REDIS_URL: redis://redis:6379
-      # App settings
-      APP_ENV: development
-      DEBUG: "true"
-      SECRET_KEY: your-secret-key-change-in-production
-      # Data sources
-      INDIA_WRIS_BASE_URL: https://indiawris.gov.in
-      IMD_BASE_URL: https://imd.gov.in
-      # Data refresh interval (seconds)
-      DATA_REFRESH_INTERVAL: 21600   # 6 hours
+      DATABASE_URL: postgresql://${POSTGRES_USER:-subterra_user}:${POSTGRES_PASSWORD:-subterra_pass}@db:5432/${POSTGRES_DB:-subterra}
+      REDIS_URL:    redis://redis:6379
+      APP_ENV:      development
+      DEBUG:        "true"
+      SECRET_KEY:   ${SECRET_KEY:-change-this-in-production}
+      INDIA_WRIS_BASE_URL: ${WRIS_BASE_URL:-https://indiawris.gov.in}
+      IMD_BASE_URL:        ${IMD_BASE_URL:-https://imdaws.imd.gov.in}
     ports:
       - "8000:8000"
     volumes:
-      - ./backend:/app                # Live reload during development
-      - ./data:/app/data              # Shared data folder
+      - ./backend:/app         # live reload in development
+      - ./data:/app/data       # shared data folder (sample CSVs, raw, processed)
     depends_on:
       db:
         condition: service_healthy
@@ -98,8 +103,40 @@ services:
       - subterra_network
 
   # ─────────────────────────────────────────────
+  # 🔄  SCRAPER — Data Pipeline
+  #     Fetches live DWLR readings from India-WRIS
+  #     + IMD rainfall every 15 minutes
+  #     Cleans data and writes to TimescaleDB
+  # ─────────────────────────────────────────────
+  scraper:
+    build:
+      context: ./data
+      dockerfile: Dockerfile.scraper
+    container_name: subterra_scraper
+    restart: unless-stopped
+    env_file: .env
+    environment:
+      DATABASE_URL:        postgresql://${POSTGRES_USER:-subterra_user}:${POSTGRES_PASSWORD:-subterra_pass}@db:5432/${POSTGRES_DB:-subterra}
+      WRIS_BASE_URL:       ${WRIS_BASE_URL:-https://indiawris.gov.in}
+      IMD_BASE_URL:        ${IMD_BASE_URL:-https://imdaws.imd.gov.in}
+      FETCH_INTERVAL_SEC:  ${FETCH_INTERVAL_SEC:-900}
+      MAX_RETRIES:         ${MAX_RETRIES:-3}
+      RETRY_BACKOFF_SEC:   ${RETRY_BACKOFF_SEC:-10}
+      REQUEST_TIMEOUT_SEC: ${REQUEST_TIMEOUT_SEC:-30}
+    volumes:
+      - ./data:/app/data        # raw/, processed/, sample/
+      - scraper_logs:/app/logs  # persistent log storage
+    depends_on:
+      db:
+        condition: service_healthy
+    command: python scripts/scraper.py
+    networks:
+      - subterra_network
+
+  # ─────────────────────────────────────────────
   # 🌐  FRONTEND — React
-  #     Dashboard, map, charts, alerts
+  #     Interactive map, dashboard, charts, alerts
+  #     UI: http://localhost:3000
   # ─────────────────────────────────────────────
   frontend:
     build:
@@ -108,45 +145,20 @@ services:
     container_name: subterra_frontend
     restart: unless-stopped
     environment:
-      REACT_APP_API_URL: http://localhost:8000
+      REACT_APP_API_URL:  http://localhost:8000
       REACT_APP_APP_NAME: SubTerra
     ports:
       - "3000:3000"
     volumes:
-      - ./frontend/src:/app/src       # Live reload during development
+      - ./frontend/src:/app/src
     depends_on:
       - backend
     networks:
       - subterra_network
 
   # ─────────────────────────────────────────────
-  # 🔄  DATA FETCHER — Scheduled Job
-  #     Pulls fresh DWLR data from India-WRIS
-  #     every 6 hours automatically
-  # ─────────────────────────────────────────────
-  fetcher:
-    build:
-      context: ./backend
-      dockerfile: Dockerfile
-    container_name: subterra_fetcher
-    restart: unless-stopped
-    environment:
-      DATABASE_URL: postgresql://subterra_user:subterra_pass@db:5432/subterra
-      INDIA_WRIS_BASE_URL: https://indiawris.gov.in
-      IMD_BASE_URL: https://imd.gov.in
-      DATA_REFRESH_INTERVAL: 21600
-    volumes:
-      - ./data:/app/data
-    depends_on:
-      db:
-        condition: service_healthy
-    command: python -m app.services.scheduler
-    networks:
-      - subterra_network
-
-  # ─────────────────────────────────────────────
-  # 📊  PGADMIN — Database UI (optional)
-  #     View your database visually
+  # 📊  PGADMIN — Database Browser (optional)
+  #     Only starts with: docker-compose --profile tools up
   #     Open: http://localhost:5050
   #     Login: admin@subterra.dev / admin
   # ─────────────────────────────────────────────
@@ -155,7 +167,7 @@ services:
     container_name: subterra_pgadmin
     restart: unless-stopped
     environment:
-      PGADMIN_DEFAULT_EMAIL: admin@subterra.dev
+      PGADMIN_DEFAULT_EMAIL:    admin@subterra.dev
       PGADMIN_DEFAULT_PASSWORD: admin
     ports:
       - "5050:80"
@@ -164,16 +176,18 @@ services:
     networks:
       - subterra_network
     profiles:
-      - tools             # Only starts with: docker-compose --profile tools up
+      - tools
 
 # ─────────────────────────────────────────────
-# 📦  VOLUMES — Persistent Data Storage
+# 📦  VOLUMES
 # ─────────────────────────────────────────────
 volumes:
   postgres_data:
     name: subterra_postgres_data
   redis_data:
     name: subterra_redis_data
+  scraper_logs:
+    name: subterra_scraper_logs
 
 # ─────────────────────────────────────────────
 # 🌐  NETWORKS
