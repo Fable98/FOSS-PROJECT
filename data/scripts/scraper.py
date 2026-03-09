@@ -3,20 +3,24 @@ SubTerra — DWLR Data Scraper
 data/scripts/scraper.py
 
 Fetches groundwater level data from:
-  Primary  → India-WRIS (indiawris.gov.in)
+  Primary  → India-WRIS GeoServer (WFS) + statewise API
   Fallback → data.gov.in open datasets
-  Fallback → Local CSV sample data
+  Fallback → Local CSV sample data (offline dev mode)
+
+Also fetches:
+  Rainfall → IMD AWS API (for Task 2 recharge estimation)
 
 Usage:
-  python scraper.py                         # Fetch all states
-  python scraper.py --state Rajasthan       # Fetch one state
-  python scraper.py --state Rajasthan --district Jaipur
-  python scraper.py --source sample         # Use local sample data (offline)
-  python scraper.py --days 30               # Last 30 days of data
+  python scraper.py                          # Continuous loop, all states
+  python scraper.py --once                   # Run once and exit
+  python scraper.py --state Rajasthan        # Fetch one state
+  python scraper.py --district Jaipur        # Fetch one district
+  python scraper.py --source sample          # Use local sample data (offline)
+  python scraper.py --days 30                # Last 30 days of data
+  python scraper.py --refresh                # Force full station master refresh
 """
 
 import argparse
-import json
 import logging
 import os
 import time
@@ -29,7 +33,7 @@ from requests.adapters import HTTPAdapter
 from urllib3.util.retry import Retry
 
 # ─────────────────────────────────────────────
-# LOGGING SETUP
+# LOGGING
 # ─────────────────────────────────────────────
 logging.basicConfig(
     level=logging.INFO,
@@ -41,9 +45,9 @@ log = logging.getLogger("subterra.scraper")
 # ─────────────────────────────────────────────
 # PATHS
 # ─────────────────────────────────────────────
-BASE_DIR    = Path(__file__).resolve().parent.parent   # data/
-RAW_DIR     = BASE_DIR / "raw"
-SAMPLE_DIR  = BASE_DIR / "sample"
+BASE_DIR      = Path(__file__).resolve().parent.parent   # data/
+RAW_DIR       = BASE_DIR / "raw"
+SAMPLE_DIR    = BASE_DIR / "sample"
 RAW_DIR.mkdir(parents=True, exist_ok=True)
 SAMPLE_DIR.mkdir(parents=True, exist_ok=True)
 
@@ -51,14 +55,16 @@ SAMPLE_DIR.mkdir(parents=True, exist_ok=True)
 # CONSTANTS
 # ─────────────────────────────────────────────
 INDIA_WRIS_BASE  = "https://indiawris.gov.in"
-WRIS_GW_API      = f"{INDIA_WRIS_BASE}/api/gwl"           # Groundwater level API
-WRIS_STATION_API = f"{INDIA_WRIS_BASE}/api/gwstation"     # Station master API
-WRIS_GEOSERVER   = f"{INDIA_WRIS_BASE}/geoserver/wfs"     # GeoServer WFS endpoint
+WRIS_GW_API      = f"{INDIA_WRIS_BASE}/api/gwl"
+WRIS_STATION_API = f"{INDIA_WRIS_BASE}/api/gwstation"
+WRIS_GEOSERVER   = f"{INDIA_WRIS_BASE}/geoserver/wfs"
 
+IMD_BASE         = os.getenv("IMD_BASE_URL", "https://imdaws.imd.gov.in")
 DATA_GOV_API     = "https://api.data.gov.in/resource"
-CGWB_DATASET_ID  = "3b01bcb8-0b14-4abf-b6f2-c1bfd384ba69"  # CGWB GW dataset
+CGWB_DATASET_ID  = "3b01bcb8-0b14-4abf-b6f2-c1bfd384ba69"
 
-# All Indian states SubTerra monitors
+FETCH_INTERVAL   = int(os.getenv("FETCH_INTERVAL_SEC", 900))   # 15 minutes
+
 ALL_STATES = [
     "Andhra Pradesh", "Arunachal Pradesh", "Assam", "Bihar",
     "Chhattisgarh", "Goa", "Gujarat", "Haryana", "Himachal Pradesh",
@@ -68,171 +74,140 @@ ALL_STATES = [
     "Uttar Pradesh", "Uttarakhand", "West Bengal",
 ]
 
+
 # ─────────────────────────────────────────────
-# HTTP SESSION — with retry logic
+# HTTP SESSION — retry + browser headers
 # ─────────────────────────────────────────────
 def make_session() -> requests.Session:
     """
-    Create a requests session with:
-    - Automatic retry on failure (3 times)
-    - 10 second timeout
+    Create a requests Session with:
+    - Automatic retry on 429 / 5xx (3 attempts, exponential backoff)
     - Browser-like headers to avoid blocks
     """
     session = requests.Session()
-
     retry = Retry(
-        total=3,                        # retry 3 times total
-        backoff_factor=1,               # wait 1s, 2s, 4s between retries
-        status_forcelist=[429, 500, 502, 503, 504],  # retry on these status codes
+        total=3,
+        backoff_factor=1,                              # waits: 1s, 2s, 4s
+        status_forcelist=[429, 500, 502, 503, 504],
     )
     adapter = HTTPAdapter(max_retries=retry)
     session.mount("https://", adapter)
-    session.mount("http://", adapter)
-
+    session.mount("http://",  adapter)
     session.headers.update({
         "User-Agent": (
             "Mozilla/5.0 (Windows NT 10.0; Win64; x64) "
             "AppleWebKit/537.36 (KHTML, like Gecko) "
             "Chrome/120.0.0.0 Safari/537.36"
         ),
-        "Accept": "application/json, text/plain, */*",
+        "Accept":          "application/json, text/plain, */*",
         "Accept-Language": "en-IN,en;q=0.9",
-        "Referer": INDIA_WRIS_BASE,
+        "Referer":         INDIA_WRIS_BASE,
     })
-
     return session
 
 
 # ═══════════════════════════════════════════════════════════════
-# FETCHER 1 — India-WRIS Station Master
-# Gets list of all DWLR stations with lat/lon/district info
+# FETCHER 1 — Station Master
 # ═══════════════════════════════════════════════════════════════
-def fetch_station_master(session: requests.Session, state: str = None) -> pd.DataFrame:
+def fetch_station_master(
+    session: requests.Session,
+    state: str = None,
+) -> pd.DataFrame:
     """
-    Fetch DWLR station metadata from India-WRIS GeoServer.
-    Returns DataFrame with station ID, name, location, aquifer info.
+    Fetch DWLR station metadata from India-WRIS GeoServer (WFS).
+    Falls back to data.gov.in, then local sample CSV.
+
+    Returns DataFrame with columns:
+        station_id, station_name, state, district, block,
+        latitude, longitude, aquifer_type, well_depth_m, station_type
     """
     log.info(f"Fetching station master — state: {state or 'ALL'}")
 
-    # WFS request to get all groundwater stations
     params = {
-        "service": "WFS",
-        "version": "1.0.0",
-        "request": "GetFeature",
-        "typeName": "india-wris:gwl_station",
+        "service":      "WFS",
+        "version":      "1.0.0",
+        "request":      "GetFeature",
+        "typeName":     "india-wris:gwl_station",
         "outputFormat": "application/json",
-        "maxFeatures": 6000,
+        "maxFeatures":  6000,
     }
-
     if state:
         params["CQL_FILTER"] = f"state_name='{state}'"
 
     try:
-        response = session.get(WRIS_GEOSERVER, params=params, timeout=15)
-        response.raise_for_status()
-        data = response.json()
+        resp = session.get(WRIS_GEOSERVER, params=params, timeout=15)
+        resp.raise_for_status()
+        data = resp.json()
 
         stations = []
         for feature in data.get("features", []):
-            props = feature.get("properties", {})
+            props  = feature.get("properties", {})
             coords = feature.get("geometry", {}).get("coordinates", [None, None])
             stations.append({
-                "station_id":    props.get("station_id", ""),
-                "station_name":  props.get("station_name", ""),
-                "state":         props.get("state_name", ""),
-                "district":      props.get("district_name", ""),
-                "block":         props.get("block_name", ""),
-                "latitude":      coords[1] if coords else None,
-                "longitude":     coords[0] if coords else None,
-                "aquifer_type":  props.get("aquifer_type", ""),
-                "well_depth_m":  props.get("well_depth", None),
-                "station_type":  props.get("station_type", "DWLR"),
+                "station_id":   props.get("station_id", ""),
+                "station_name": props.get("station_name", ""),
+                "state":        props.get("state_name", ""),
+                "district":     props.get("district_name", ""),
+                "block":        props.get("block_name", ""),
+                "latitude":     coords[1] if coords else None,
+                "longitude":    coords[0] if coords else None,
+                "aquifer_type": props.get("aquifer_type", ""),
+                "well_depth_m": props.get("well_depth", None),
+                "station_type": props.get("station_type", "DWLR"),
             })
 
         df = pd.DataFrame(stations)
-        log.info(f"  Fetched {len(df)} stations from India-WRIS GeoServer")
+        log.info(f"  {len(df)} stations from India-WRIS GeoServer.")
         return df
 
     except requests.exceptions.ConnectionError:
-        log.warning("  India-WRIS GeoServer unreachable — trying fallback")
-        return fetch_station_master_fallback(state)
+        log.warning("  GeoServer unreachable — trying data.gov.in fallback …")
+        return _station_fallback(state)
     except Exception as e:
-        log.warning(f"  GeoServer error: {e} — trying fallback")
-        return fetch_station_master_fallback(state)
+        log.warning(f"  GeoServer error: {e} — trying fallback …")
+        return _station_fallback(state)
 
 
-def fetch_station_master_fallback(state: str = None) -> pd.DataFrame:
-    """
-    Fallback: fetch station data from data.gov.in open API
-    """
-    log.info("  Trying data.gov.in fallback for station master...")
+def _station_fallback(state: str = None) -> pd.DataFrame:
+    """Fallback 1: data.gov.in → Fallback 2: sample CSV → Fallback 3: synthetic."""
     try:
         params = {
-            "api-key": os.getenv("DATA_GOV_API_KEY", "579b464db66ec23bdd000001cdd3946e44ce4aad38d76835a8bfe6d"),
-            "format": "json",
-            "limit": 500,
+            "api-key": os.getenv(
+                "DATA_GOV_API_KEY",
+                "579b464db66ec23bdd000001cdd3946e44ce4aad38d76835a8bfe6d"
+            ),
+            "format":         "json",
+            "limit":          500,
             "filters[state]": state or "",
         }
-        response = requests.get(
-            f"{DATA_GOV_API}/{CGWB_DATASET_ID}",
-            params=params,
-            timeout=15,
+        resp = requests.get(
+            f"{DATA_GOV_API}/{CGWB_DATASET_ID}", params=params, timeout=15
         )
-        response.raise_for_status()
-        records = response.json().get("records", [])
+        resp.raise_for_status()
+        records = resp.json().get("records", [])
         df = pd.DataFrame(records)
-        log.info(f"  Fetched {len(df)} stations from data.gov.in")
+        log.info(f"  {len(df)} stations from data.gov.in fallback.")
+        return df
+    except Exception as e:
+        log.warning(f"  data.gov.in also failed: {e}")
+
+    # Fallback: local sample CSV
+    sample_file = SAMPLE_DIR / "station_master_sample.csv"
+    if sample_file.exists():
+        df = pd.read_csv(sample_file)
+        if state:
+            df = df[df["state"].str.lower() == state.lower()]
+        log.info(f"  {len(df)} stations from sample CSV (offline mode).")
         return df
 
-    except Exception as e:
-        log.warning(f"  data.gov.in also failed: {e} — using sample data")
-        return load_sample_stations(state)
+    # Last resort: synthetic data
+    log.warning("  Generating synthetic sample stations.")
+    return _generate_sample_stations(state)
 
 
 # ═══════════════════════════════════════════════════════════════
-# FETCHER 2 — India-WRIS Water Level Readings
-# Gets actual DWLR water level time-series data
+# FETCHER 2 — DWLR Water Level Readings
 # ═══════════════════════════════════════════════════════════════
-def fetch_water_levels(
-    session: requests.Session,
-    station_id: str,
-    days: int = 30,
-) -> pd.DataFrame:
-    """
-    Fetch water level time-series for a single DWLR station.
-    Returns DataFrame with timestamp and water_level_m columns.
-    """
-    end_date   = datetime.now()
-    start_date = end_date - timedelta(days=days)
-
-    params = {
-        "station_id": station_id,
-        "from_date":  start_date.strftime("%Y-%m-%d"),
-        "to_date":    end_date.strftime("%Y-%m-%d"),
-        "type":       "DWLR",
-    }
-
-    try:
-        response = session.get(WRIS_GW_API, params=params, timeout=15)
-        response.raise_for_status()
-        data = response.json()
-
-        readings = []
-        for record in data.get("data", []):
-            readings.append({
-                "station_id":    station_id,
-                "timestamp":     pd.to_datetime(record.get("date_time")),
-                "water_level_m": float(record.get("water_level", 0)),
-                "data_quality":  record.get("quality_flag", "Good"),
-            })
-
-        return pd.DataFrame(readings)
-
-    except Exception as e:
-        log.debug(f"  Could not fetch readings for {station_id}: {e}")
-        return pd.DataFrame()
-
-
 def fetch_water_levels_batch(
     session: requests.Session,
     state: str,
@@ -240,12 +215,15 @@ def fetch_water_levels_batch(
     days: int = 30,
 ) -> pd.DataFrame:
     """
-    Fetch water levels for all stations in a state/district.
-    Tries India-WRIS state-level report endpoint first.
+    Fetch water level time-series for all stations in a state/district.
+    Falls back to sample data if API is unreachable.
+
+    Returns DataFrame with columns:
+        station_id, station_name, state, district,
+        timestamp, water_level_m, data_quality
     """
     log.info(f"Fetching water levels — {state} / {district or 'all districts'}")
 
-    # Try the state-level report endpoint (returns all stations at once)
     params = {
         "state":    state,
         "district": district or "",
@@ -254,18 +232,18 @@ def fetch_water_levels_batch(
     }
 
     try:
-        response = session.get(
+        resp = session.get(
             f"{INDIA_WRIS_BASE}/api/gwl/statewise",
             params=params,
             timeout=20,
         )
-        response.raise_for_status()
-        data = response.json()
+        resp.raise_for_status()
+        data = resp.json()
 
-        all_readings = []
+        rows = []
         for station in data.get("stations", []):
             for reading in station.get("readings", []):
-                all_readings.append({
+                rows.append({
                     "station_id":    station.get("station_id"),
                     "station_name":  station.get("station_name"),
                     "state":         state,
@@ -275,152 +253,177 @@ def fetch_water_levels_batch(
                     "data_quality":  reading.get("quality", "Good"),
                 })
 
-        df = pd.DataFrame(all_readings)
-        log.info(f"  Fetched {len(df)} readings from India-WRIS")
+        df = pd.DataFrame(rows)
+        log.info(f"  {len(df)} readings from India-WRIS.")
         return df
 
     except requests.exceptions.ConnectionError:
-        log.warning("  India-WRIS unreachable — using sample data")
-        return load_sample_readings(state, district, days)
+        log.warning(f"  India-WRIS unreachable for {state} — using sample data.")
+        return _load_sample_readings(state, district, days)
     except Exception as e:
-        log.warning(f"  API error: {e} — using sample data")
-        return load_sample_readings(state, district, days)
+        log.warning(f"  API error for {state}: {e} — using sample data.")
+        return _load_sample_readings(state, district, days)
 
 
 # ═══════════════════════════════════════════════════════════════
-# SAMPLE DATA LOADERS — Used when India-WRIS is unreachable
+# FETCHER 3 — IMD Rainfall
 # ═══════════════════════════════════════════════════════════════
-def load_sample_stations(state: str = None) -> pd.DataFrame:
-    """Load station data from local sample CSV files."""
-    sample_file = SAMPLE_DIR / "stations.csv"
+def fetch_rainfall(
+    session: requests.Session,
+    states: list[str],
+    target_date: datetime = None,
+) -> pd.DataFrame:
+    """
+    Fetch daily district-level rainfall from IMD AWS.
+    Used by Task 2 recharge estimation.
 
-    if sample_file.exists():
-        df = pd.read_csv(sample_file)
-        if state:
-            df = df[df["state"].str.lower() == state.lower()]
-        log.info(f"  Loaded {len(df)} stations from sample data")
+    Returns DataFrame with columns:
+        state, district, date, rainfall_mm
+    """
+    if target_date is None:
+        target_date = datetime.now()
+
+    date_str = target_date.strftime("%Y-%m-%d")
+    log.info(f"Fetching IMD rainfall — {len(states)} states on {date_str} …")
+
+    try:
+        resp = session.get(
+            f"{IMD_BASE}/api/rainfall/district",
+            params={
+                "states": ",".join(states),
+                "date":   date_str,
+                "format": "json",
+            },
+            timeout=15,
+        )
+        resp.raise_for_status()
+        data = resp.json()
+
+        rows = []
+        for record in data.get("data", []):
+            rows.append({
+                "state":       record.get("stateName"),
+                "district":    record.get("distName"),
+                "date":        pd.to_datetime(record.get("date")).date(),
+                "rainfall_mm": float(record.get("rainfallMm", 0)),
+            })
+
+        df = pd.DataFrame(rows)
+        log.info(f"  {len(df)} district rainfall records from IMD.")
         return df
 
-    # If no sample file — generate minimal sample
-    log.info("  Generating minimal sample station data")
-    return generate_sample_stations(state)
+    except Exception as e:
+        log.warning(f"  IMD API unavailable: {e} — using sample rainfall data.")
+        sample_file = SAMPLE_DIR / "rainfall_sample.csv"
+        if sample_file.exists():
+            return pd.read_csv(sample_file, parse_dates=["date"])
+        return pd.DataFrame(columns=["state", "district", "date", "rainfall_mm"])
 
 
-def load_sample_readings(
+# ═══════════════════════════════════════════════════════════════
+# SAMPLE / SYNTHETIC DATA
+# ═══════════════════════════════════════════════════════════════
+def _load_sample_readings(
     state: str,
     district: str = None,
     days: int = 30,
 ) -> pd.DataFrame:
-    """Load readings from local sample CSV or generate synthetic data."""
-    sample_file = SAMPLE_DIR / "readings.csv"
-
+    """Load readings from sample CSV, or generate synthetic data."""
+    sample_file = SAMPLE_DIR / "dwlr_readings_sample.csv"
     if sample_file.exists():
         df = pd.read_csv(sample_file, parse_dates=["timestamp"])
         if state:
-            df = df[df["state"].str.lower() == state.lower()]
+            df = df[df.get("state", pd.Series(dtype=str)).str.lower() == state.lower()]
         if district:
-            df = df[df["district"].str.lower() == district.lower()]
+            df = df[df.get("district", pd.Series(dtype=str)).str.lower() == district.lower()]
         cutoff = datetime.now() - timedelta(days=days)
         df = df[df["timestamp"] >= cutoff]
-        log.info(f"  Loaded {len(df)} readings from sample file")
+        log.info(f"  {len(df)} readings from sample CSV.")
         return df
 
-    log.info("  Generating synthetic sample readings")
-    return generate_sample_readings(state, district, days)
+    log.info("  Generating synthetic sample readings.")
+    return _generate_sample_readings(state, district, days)
 
 
-# ═══════════════════════════════════════════════════════════════
-# SAMPLE DATA GENERATOR — Realistic synthetic DWLR data
-# ═══════════════════════════════════════════════════════════════
-def generate_sample_stations(state: str = None) -> pd.DataFrame:
-    """Generate realistic sample station master data."""
+def _generate_sample_stations(state: str = None) -> pd.DataFrame:
+    """Generate realistic synthetic station master data."""
     import random
-
-    state_config = {
-        "Rajasthan":     {"base_lat": 27.0, "base_lon": 74.0, "base_wl": 18.0},
-        "Gujarat":       {"base_lat": 22.5, "base_lon": 72.0, "base_wl": 22.0},
-        "Maharashtra":   {"base_lat": 19.0, "base_lon": 76.0, "base_wl":  8.0},
-        "Uttar Pradesh": {"base_lat": 26.5, "base_lon": 80.0, "base_wl":  6.0},
-        "Punjab":        {"base_lat": 31.0, "base_lon": 75.0, "base_wl": 12.0},
-        "Haryana":       {"base_lat": 29.0, "base_lon": 76.0, "base_wl": 11.0},
+    state_cfg = {
+        "Rajasthan":     {"lat": 27.0, "lon": 74.0},
+        "Gujarat":       {"lat": 22.5, "lon": 72.0},
+        "Maharashtra":   {"lat": 19.0, "lon": 76.0},
+        "Uttar Pradesh": {"lat": 26.5, "lon": 80.0},
+        "Punjab":        {"lat": 31.0, "lon": 75.0},
+        "Haryana":       {"lat": 29.0, "lon": 76.0},
     }
-
-    states_to_gen = [state] if state else list(state_config.keys())
+    states_to_gen = [state] if state else list(state_cfg.keys())
     rows = []
-    station_num = 1
-
+    n = 1
     for s in states_to_gen:
-        cfg = state_config.get(s, {"base_lat": 23.0, "base_lon": 78.0, "base_wl": 10.0})
+        cfg = state_cfg.get(s, {"lat": 23.0, "lon": 78.0})
         for i in range(5):
             rows.append({
-                "station_id":   f"CGWB_{s[:2].upper()}_{station_num:04d}",
+                "station_id":   f"CGWB_{s[:2].upper()}_{n:04d}",
                 "station_name": f"{s} Well {i + 1}",
                 "state":        s,
                 "district":     f"District {i + 1}",
                 "block":        f"Block {i + 1}",
-                "latitude":     round(cfg["base_lat"] + random.uniform(-1, 1), 4),
-                "longitude":    round(cfg["base_lon"] + random.uniform(-1, 1), 4),
+                "latitude":     round(cfg["lat"] + random.uniform(-1, 1), 4),
+                "longitude":    round(cfg["lon"] + random.uniform(-1, 1), 4),
                 "aquifer_type": random.choice(["Alluvial", "Hard Rock", "Basalt"]),
                 "well_depth_m": round(random.uniform(25, 80), 1),
                 "station_type": "DWLR",
             })
-            station_num += 1
-
+            n += 1
     return pd.DataFrame(rows)
 
 
-def generate_sample_readings(
+def _generate_sample_readings(
     state: str,
     district: str = None,
     days: int = 30,
 ) -> pd.DataFrame:
-    """Generate realistic synthetic DWLR readings every 6 hours."""
+    """Generate realistic synthetic DWLR readings every 15 minutes."""
     import random
-
-    state_base_wl = {
+    base_wl_map = {
         "Rajasthan": 18.0, "Gujarat": 22.0, "Maharashtra": 8.0,
         "Uttar Pradesh": 6.0, "Punjab": 12.0, "Haryana": 11.0,
     }
-    base_wl = state_base_wl.get(state, 10.0)
+    base_wl  = base_wl_map.get(state, 10.0)
+    stations = _generate_sample_stations(state)
+    rows     = []
 
-    stations = generate_sample_stations(state)
-    rows = []
-
-    for _, station in stations.iterrows():
+    for _, stn in stations.iterrows():
         wl = base_wl + random.uniform(-2, 2)
-        current_time = datetime.now() - timedelta(days=days)
-
-        while current_time <= datetime.now():
-            # Small random fluctuation every 6 hours
-            wl += random.uniform(-0.05, 0.04)
-            wl = round(max(1.0, wl), 2)    # never go below 1m
-
+        ts = datetime.now() - timedelta(days=days)
+        while ts <= datetime.now():
+            wl += random.uniform(-0.03, 0.02)
+            wl  = round(max(1.0, wl), 2)
             rows.append({
-                "station_id":    station["station_id"],
-                "station_name":  station["station_name"],
+                "station_id":    stn["station_id"],
+                "station_name":  stn["station_name"],
                 "state":         state,
-                "district":      station["district"],
-                "timestamp":     current_time,
+                "district":      stn["district"],
+                "timestamp":     ts,
                 "water_level_m": wl,
                 "data_quality":  random.choices(
-                    ["Good", "Good", "Good", "Suspect"],
-                    weights=[80, 10, 5, 5],
+                    ["Good", "Suspect", "Bad"],
+                    weights=[90, 7, 3],
                 )[0],
             })
-            current_time += timedelta(hours=6)
+            ts += timedelta(minutes=15)   # 15-min interval matches real DWLR
 
     return pd.DataFrame(rows)
 
 
 # ═══════════════════════════════════════════════════════════════
-# SAVE — Write fetched data to raw/ folder
+# SAVE
 # ═══════════════════════════════════════════════════════════════
 def save_raw(df: pd.DataFrame, filename: str) -> Path:
-    """Save DataFrame to raw/ folder as CSV."""
+    """Save DataFrame to raw/ folder as CSV with timestamp + latest copy."""
     if df.empty:
         log.warning(f"  Nothing to save for {filename}")
         return None
-
     filepath = RAW_DIR / filename
     df.to_csv(filepath, index=False)
     log.info(f"  Saved {len(df)} rows → {filepath}")
@@ -428,73 +431,149 @@ def save_raw(df: pd.DataFrame, filename: str) -> Path:
 
 
 # ═══════════════════════════════════════════════════════════════
-# MAIN — Entry point
+# DB WRITE — clean + write to TimescaleDB
+# ═══════════════════════════════════════════════════════════════
+def write_to_db(
+    stations_df: pd.DataFrame,
+    readings_df: pd.DataFrame,
+    rainfall_df: pd.DataFrame,
+):
+    """
+    Run cleaning pipeline and write all three datasets to TimescaleDB.
+    Skips gracefully if DB is unreachable (e.g. running without Docker).
+    """
+    try:
+        from clean_data import run_cleaning_pipeline
+        from db_writer import DBWriter
+
+        clean_r, clean_s, clean_rf = run_cleaning_pipeline(
+            readings_df, stations_df, rainfall_df
+        )
+
+        db = DBWriter()
+        db.ensure_schema()
+        db.upsert_stations(clean_s)
+        db.insert_readings(clean_r)
+        if not clean_rf.empty:
+            db.upsert_rainfall(clean_rf)
+        db.close()
+        log.info("  Written to TimescaleDB ✓")
+
+    except ImportError:
+        log.warning("  db_writer not available — skipping DB write.")
+    except Exception as e:
+        log.error(f"  DB write failed: {e} — data saved to raw/ only.")
+
+
+# ═══════════════════════════════════════════════════════════════
+# SINGLE PIPELINE RUN
+# ═══════════════════════════════════════════════════════════════
+def run_once(
+    state: str = None,
+    district: str = None,
+    days: int = 30,
+    source: str = "live",
+    refresh: bool = False,
+):
+    """Execute one full fetch → save → DB write cycle."""
+    log.info("=" * 55)
+    log.info("  SubTerra DWLR Scraper — Pipeline Run")
+    log.info(f"  State   : {state or 'ALL'}")
+    log.info(f"  District: {district or 'ALL'}")
+    log.info(f"  Days    : {days}")
+    log.info(f"  Source  : {source}")
+    log.info("=" * 55)
+
+    start = time.time()
+
+    if source == "sample":
+        log.info("Running in SAMPLE mode (offline)")
+        stations_df = _generate_sample_stations(state)
+        readings_df = _generate_sample_readings(state or "Rajasthan", district, days)
+        rainfall_df = pd.DataFrame(
+            columns=["state", "district", "date", "rainfall_mm"]
+        )
+    else:
+        session = make_session()
+
+        # Step 1 — Station Master
+        log.info("Step 1/3 — Fetching station master …")
+        stations_df = fetch_station_master(session, state)
+
+        # Step 2 — Water Level Readings
+        log.info("Step 2/3 — Fetching water level readings …")
+        states_to_fetch = [state] if state else ALL_STATES
+        all_readings = []
+        for s in states_to_fetch:
+            df = fetch_water_levels_batch(session, s, district, days)
+            all_readings.append(df)
+            time.sleep(0.5)   # polite rate limit
+
+        readings_df = (
+            pd.concat(all_readings, ignore_index=True)
+            if all_readings else pd.DataFrame()
+        )
+
+        # Step 3 — Rainfall
+        log.info("Step 3/3 — Fetching IMD rainfall …")
+        states_list = [state] if state else ALL_STATES
+        rainfall_df = fetch_rainfall(session, states_list)
+
+    # Save raw files
+    ts = datetime.now().strftime("%Y%m%d_%H%M%S")
+    save_raw(stations_df, f"stations_{ts}.csv")
+    save_raw(readings_df, f"readings_{ts}.csv")
+    save_raw(rainfall_df, f"rainfall_{ts}.csv")
+    save_raw(stations_df, "stations_latest.csv")
+    save_raw(readings_df, "readings_latest.csv")
+    save_raw(rainfall_df, "rainfall_latest.csv")
+
+    # Write to TimescaleDB
+    write_to_db(stations_df, readings_df, rainfall_df)
+
+    elapsed = round(time.time() - start, 2)
+    log.info("=" * 55)
+    log.info(f"  Done in {elapsed}s")
+    log.info(f"  Stations : {len(stations_df)}")
+    log.info(f"  Readings : {len(readings_df)}")
+    log.info(f"  Rainfall : {len(rainfall_df)}")
+    log.info("=" * 55)
+
+
+# ═══════════════════════════════════════════════════════════════
+# MAIN
 # ═══════════════════════════════════════════════════════════════
 def main():
     parser = argparse.ArgumentParser(
-        description="SubTerra DWLR Data Scraper — fetches groundwater data from India-WRIS"
+        description="SubTerra DWLR Scraper — fetches groundwater data from India-WRIS"
     )
-    parser.add_argument("--state",    type=str, default=None,   help="State name (default: all states)")
-    parser.add_argument("--district", type=str, default=None,   help="District name (default: all districts)")
-    parser.add_argument("--days",     type=int, default=30,     help="Number of days of history (default: 30)")
-    parser.add_argument("--source",   type=str, default="live", choices=["live", "sample"],
-                        help="Data source: live = India-WRIS, sample = local files")
+    parser.add_argument("--state",    type=str,  default=None,   help="State name (default: all)")
+    parser.add_argument("--district", type=str,  default=None,   help="District name (default: all)")
+    parser.add_argument("--days",     type=int,  default=30,     help="Days of history (default: 30)")
+    parser.add_argument("--source",   type=str,  default="live",
+                        choices=["live", "sample"],              help="live = India-WRIS, sample = local")
+    parser.add_argument("--once",     action="store_true",       help="Run once and exit")
+    parser.add_argument("--refresh",  action="store_true",       help="Force full station master refresh")
     args = parser.parse_args()
 
-    log.info("=" * 55)
-    log.info("  SubTerra DWLR Scraper Starting")
-    log.info(f"  State    : {args.state or 'ALL'}")
-    log.info(f"  District : {args.district or 'ALL'}")
-    log.info(f"  Days     : {args.days}")
-    log.info(f"  Source   : {args.source}")
-    log.info("=" * 55)
+    os.makedirs("logs", exist_ok=True)
 
-    start_time = time.time()
-
-    if args.source == "sample":
-        # ── Offline mode — use local sample data ──
-        log.info("Running in SAMPLE mode (offline)")
-        stations = load_sample_stations(args.state)
-        readings = load_sample_readings(args.state, args.district, args.days)
-
+    if args.once:
+        run_once(args.state, args.district, args.days, args.source, args.refresh)
     else:
-        # ── Live mode — fetch from India-WRIS ──
-        session = make_session()
-
-        # Step 1: Fetch station master
-        log.info("Step 1/2 — Fetching station master data...")
-        stations = fetch_station_master(session, args.state)
-
-        # Step 2: Fetch water level readings
-        log.info("Step 2/2 — Fetching water level readings...")
-        states_to_fetch = [args.state] if args.state else ALL_STATES[:5]  # limit in dev
-
-        all_readings = []
-        for state in states_to_fetch:
-            df = fetch_water_levels_batch(session, state, args.district, args.days)
-            all_readings.append(df)
-            time.sleep(1)   # be polite — don't hammer the server
-
-        readings = pd.concat(all_readings, ignore_index=True) if all_readings else pd.DataFrame()
-
-    # Step 3: Save to raw/
-    log.info("Saving data...")
-    timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
-    save_raw(stations, f"stations_{timestamp}.csv")
-    save_raw(readings, f"readings_{timestamp}.csv")
-
-    # Also save as latest (overwrite)
-    save_raw(stations, "stations_latest.csv")
-    save_raw(readings, "readings_latest.csv")
-
-    elapsed = round(time.time() - start_time, 2)
-
-    log.info("=" * 55)
-    log.info(f"  Done in {elapsed}s")
-    log.info(f"  Stations : {len(stations)}")
-    log.info(f"  Readings : {len(readings)}")
-    log.info(f"  Saved to : {RAW_DIR}")
-    log.info("=" * 55)
+        log.info(f"Starting continuous scraper (interval: {FETCH_INTERVAL}s) …")
+        first_run = True
+        while True:
+            try:
+                run_once(
+                    args.state, args.district, args.days,
+                    args.source, refresh=first_run,
+                )
+                first_run = False
+            except Exception as e:
+                log.error(f"Pipeline error: {e}", exc_info=True)
+            log.info(f"Sleeping {FETCH_INTERVAL}s …")
+            time.sleep(FETCH_INTERVAL)
 
 
 if __name__ == "__main__":
