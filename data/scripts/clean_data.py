@@ -280,7 +280,7 @@ def clean_readings(df: pd.DataFrame) -> tuple[pd.DataFrame, dict]:
     df = df.drop(columns=["_prev_level", "_level_jump"])
 
     # 9 — Statistical anomaly detection (rolling Z-score per station)
-    df = _detect_anomalies(df)
+    df = detect_anomalies(df)
     report["anomalies_flagged"] = int(df.get("is_anomaly", pd.Series(dtype=bool)).sum())
     if report["anomalies_flagged"]:
         log.info(f"  Flagged {report['anomalies_flagged']} statistical anomalies.")
