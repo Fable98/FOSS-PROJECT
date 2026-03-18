@@ -63,7 +63,7 @@ def get_settings() -> Settings:
     """
     Returns cached settings instance.
     Use as FastAPI dependency: Depends(get_settings)
-    Or direct import: from config import settings
+    Or direct import: from app.config import settings
     """
     return Settings()
 
