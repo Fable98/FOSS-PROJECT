@@ -347,7 +347,7 @@ def generate_district_scorecard(station_results: list[dict]) -> dict:
     priority_map  = {v["label"]: v["priority"] for v in STATUS_CONFIG.values()}
     worst_status  = df.loc[df["status"].map(
         {k: v["priority"] for k, v in STATUS_CONFIG.items()}
-    ).idxmax(), "status"]
+    ).fillna(0).idxmax(), "status"]
 
     # Ranking within district
     df_ranked = df.nsmallest(5, "resource_availability_index")[
