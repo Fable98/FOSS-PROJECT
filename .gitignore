@@ -1,0 +1,18 @@
+# Python cache
+__pycache__/
+*.py[cod]
+*.pyo
+
+# Env
+.env
+.venv/
+venv/
+
+# pytest
+.pytest_cache/
+.coverage
+htmlcov/
+
+# OS
+.DS_Store
+Thumbs.db
