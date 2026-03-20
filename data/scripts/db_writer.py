@@ -18,7 +18,7 @@ log = logging.getLogger("db_writer")
 
 DB_URL = os.getenv(
     "DATABASE_URL",
-    "postgresql://subterra:subterra_pass@localhost:5432/subterra_db",
+    "postgresql://subterra_user:subterra_pass@localhost:5432/subterra",
 )
 
 
