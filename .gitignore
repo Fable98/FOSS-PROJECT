@@ -15,4 +15,5 @@ htmlcov/
 
 # OS
 .DS_Store
-Thumbs.db
+Thumbs.dbnode_modules/
+frontend/node_modules/
