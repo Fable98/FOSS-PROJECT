@@ -125,7 +125,7 @@ def _detect_recharge_events(
     rain_events = rf[rf["rainfall_mm"] >= MIN_RAINFALL_EVENT_MM].copy()
 
     for _, rain_row in rain_events.iterrows():
-        rain_date  = pd.Timestamp(rain_row["date"])
+        rain_date = pd.Timestamp(rain_row["date"]).tz_localize("UTC")
         rain_mm    = float(rain_row["rainfall_mm"])
 
         # Get water level at time of rainfall
@@ -210,7 +210,7 @@ def _compute_net_recharge(df: pd.DataFrame) -> dict:
     Positive result = water table recovered (net recharge this year).
     """
     df = df.copy()
-    df["month"] = pd.to_datetime(df["timestamp"]).dt.month
+    df["month"] = pd.to_datetime(df["timestamp"], utc=True).dt.month
 
     pre_monsoon  = df[df["month"].isin(PRE_MONSOON_MONTHS)]
     post_monsoon = df[df["month"].isin(POST_MONSOON_MONTHS)]

@@ -1,11 +1,9 @@
 """
 app/services/recharge.py — SubTerra
 Service layer for Task 2 — Dynamic Recharge Estimation.
-Fetches readings + rainfall from DB, calls Task 2 algorithm.
 """
-
 import logging
-from datetime import datetime, timedelta
+from datetime import datetime, timedelta, timezone
 from typing import Optional
 
 import pandas as pd
@@ -22,53 +20,37 @@ def get_recharge_estimate(
     db:         Session,
     days:       int = 365,
 ) -> dict:
-    """
-    Fetch readings + rainfall from DB and run Task 2 for one station.
-    Called by: GET /api/task2/{station_id}
-
-    Args:
-        station_id : DWLR station ID
-        db         : SQLAlchemy session
-        days       : History window in days (default 1 year for monsoon comparison)
-
-    Returns Task 2 result dict.
-    """
-    since = datetime.utcnow() - timedelta(days=days)
-
-    # Fetch station metadata
+    """Fetch readings + rainfall from DB and run Task 2 for one station."""
     station = db.query(Station).filter(Station.station_id == station_id).first()
     if not station:
         return {"error": f"Station {station_id} not found", "station_id": station_id}
 
     station_meta = {
-        "station_id":  station.station_id,
-        "state":       station.state,
-        "district":    station.district,
+        "station_id":   station.station_id,
+        "state":        station.state,
+        "district":     station.district,
         "aquifer_type": station.aquifer_type,
         "well_depth_m": station.well_depth_m,
     }
 
-    # Fetch readings
+    # Fetch ALL readings (no time filter — we need full monsoon window)
     reading_rows = (
         db.query(DWLRReading)
-        .filter(
-            DWLRReading.station_id == station_id,
-            DWLRReading.timestamp  >= since,
-        )
+        .filter(DWLRReading.station_id == station_id)
         .order_by(DWLRReading.timestamp)
+        .limit(15000)
         .all()
     )
 
     if not reading_rows:
         return {"error": f"No readings for station {station_id}", "station_id": station_id}
 
-    # Fetch rainfall for station's district
+    # Fetch rainfall — no strict filter since rainfall may be empty
     rainfall_rows = (
         db.query(Rainfall)
         .filter(
             Rainfall.state    == station.state,
             Rainfall.district == station.district,
-            Rainfall.date     >= since.date(),
         )
         .order_by(Rainfall.date)
         .all()
@@ -77,6 +59,7 @@ def get_recharge_estimate(
     readings_df = _readings_to_df(reading_rows)
     rainfall_df = _rainfall_to_df(rainfall_rows)
 
+    log.info(f"Task2 [{station_id}]: {len(readings_df)} readings, {len(rainfall_df)} rainfall rows")
     return estimate_recharge(readings_df, rainfall_df, station_meta)
 
 
@@ -86,12 +69,7 @@ def get_recharge_batch(
     district: Optional[str] = None,
     days:     int = 365,
 ) -> list[dict]:
-    """
-    Run Task 2 for all stations (optionally filtered).
-    Called by bulk recharge endpoint.
-    """
-    since = datetime.utcnow() - timedelta(days=days)
-
+    """Run Task 2 for all stations."""
     station_query = db.query(Station)
     if state:
         station_query = station_query.filter(Station.state.ilike(f"%{state}%"))
@@ -103,54 +81,37 @@ def get_recharge_batch(
         return []
 
     station_ids = [s.station_id for s in stations]
-
-    reading_rows = (
-        db.query(DWLRReading)
-        .filter(
-            DWLRReading.station_id.in_(station_ids),
-            DWLRReading.timestamp  >= since,
-        )
-        .all()
-    )
-
-    states = list({s.state for s in stations if s.state})
-    rainfall_rows = (
-        db.query(Rainfall)
-        .filter(
-            Rainfall.state.in_(states),
-            Rainfall.date >= since.date(),
-        )
-        .all()
-    )
+    reading_rows  = db.query(DWLRReading).filter(DWLRReading.station_id.in_(station_ids)).limit(100000).all()
+    rainfall_rows = db.query(Rainfall).all()
 
     readings_df = _readings_to_df(reading_rows)
     rainfall_df = _rainfall_to_df(rainfall_rows)
     stations_df = pd.DataFrame([{
-        "station_id":   s.station_id,
-        "state":        s.state,
-        "district":     s.district,
-        "aquifer_type": s.aquifer_type,
-        "well_depth_m": s.well_depth_m,
+        "station_id": s.station_id, "state": s.state,
+        "district": s.district, "aquifer_type": s.aquifer_type, "well_depth_m": s.well_depth_m,
     } for s in stations])
 
     return estimate_recharge_all_stations(readings_df, rainfall_df, stations_df)
 
 
-# ── Internal helpers ───────────────────────────────────────────────────────────
-
 def _readings_to_df(rows) -> pd.DataFrame:
-    return pd.DataFrame([{
-        "station_id":    r.station_id,
-        "timestamp":     r.timestamp,
-        "water_level_m": r.water_level_m,
-        "data_quality_flag": r.data_quality_flag,
+    df = pd.DataFrame([{
+        "station_id":        r.station_id,
+        "timestamp":         r.timestamp,
+        "water_level_m":     r.water_level_m,
+        "data_quality_flag": r.data_quality_flag or "G",
     } for r in rows])
+    if not df.empty:
+        df["timestamp"] = pd.to_datetime(df["timestamp"])
+        if df["timestamp"].dt.tz is None:
+            df["timestamp"] = df["timestamp"].dt.tz_localize("Asia/Kolkata")
+    return df
 
 
 def _rainfall_to_df(rows) -> pd.DataFrame:
+    if not rows:
+        return pd.DataFrame(columns=["state","district","date","rainfall_mm"])
     return pd.DataFrame([{
-        "state":       r.state,
-        "district":    r.district,
-        "date":        r.date,
-        "rainfall_mm": r.rainfall_mm,
+        "state": r.state, "district": r.district,
+        "date": r.date, "rainfall_mm": r.rainfall_mm,
     } for r in rows])

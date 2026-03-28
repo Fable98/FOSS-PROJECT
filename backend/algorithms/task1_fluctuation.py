@@ -63,7 +63,8 @@ def analyze_fluctuations(
         return _empty_result(station_id, "No data available")
 
     df = df.sort_values("timestamp").reset_index(drop=True)
-    df = df[df["data_quality_flag"].isin(["G", "Good"]) | ~df["data_quality_flag"].isin(["E", "M", "X"])]
+    df["data_quality_flag"] = df["data_quality_flag"].fillna("G")
+    df = df[~df["data_quality_flag"].isin({"E", "M", "X", "Bad", "BAD"})]
 
     if len(df) < 2:
         return _empty_result(station_id, "Insufficient readings")
