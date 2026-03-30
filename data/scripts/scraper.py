@@ -76,6 +76,14 @@ ALL_STATES = [
 SAMPLE_STATIONS_PER_STATE = 3
 
 
+def _state_code(state: str) -> str:
+    """Build a stable short code for synthetic station IDs."""
+    parts = [p for p in str(state).split() if p]
+    if len(parts) >= 2:
+      return (parts[0][0] + parts[1][0]).upper()
+    return str(state)[:2].upper()
+
+
 # ─────────────────────────────────────────────
 # HTTP SESSION — retry + browser headers
 # ─────────────────────────────────────────────
@@ -359,13 +367,13 @@ def _generate_sample_stations(state: str = None) -> pd.DataFrame:
     }
     states_to_gen = [state] if state else ALL_STATES
     rows = []
-    n = 1
     for s in states_to_gen:
         cfg = state_cfg.get(s, {"lat": 23.0, "lon": 78.0})
         rng = random.Random(f"stations:{s}")
+        code = _state_code(s)
         for i in range(SAMPLE_STATIONS_PER_STATE):
             rows.append({
-                "station_id":   f"CGWB_{s[:2].upper()}_{n:04d}",
+                "station_id":   f"CGWB_{code}_{i + 1:04d}",
                 "station_name": f"{s} Well {i + 1}",
                 "state":        s,
                 "district":     f"District {i + 1}",
@@ -376,7 +384,6 @@ def _generate_sample_stations(state: str = None) -> pd.DataFrame:
                 "well_depth_m": round(rng.uniform(25, 80), 1),
                 "station_type": "DWLR",
             })
-            n += 1
     return pd.DataFrame(rows)
 
 
