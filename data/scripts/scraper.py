@@ -73,6 +73,7 @@ ALL_STATES = [
     "Rajasthan", "Sikkim", "Tamil Nadu", "Telangana", "Tripura",
     "Uttar Pradesh", "Uttarakhand", "West Bengal",
 ]
+SAMPLE_STATIONS_PER_STATE = 3
 
 
 # ─────────────────────────────────────────────
@@ -356,22 +357,23 @@ def _generate_sample_stations(state: str = None) -> pd.DataFrame:
         "Punjab":        {"lat": 31.0, "lon": 75.0},
         "Haryana":       {"lat": 29.0, "lon": 76.0},
     }
-    states_to_gen = [state] if state else list(state_cfg.keys())
+    states_to_gen = [state] if state else ALL_STATES
     rows = []
     n = 1
     for s in states_to_gen:
         cfg = state_cfg.get(s, {"lat": 23.0, "lon": 78.0})
-        for i in range(5):
+        rng = random.Random(f"stations:{s}")
+        for i in range(SAMPLE_STATIONS_PER_STATE):
             rows.append({
                 "station_id":   f"CGWB_{s[:2].upper()}_{n:04d}",
                 "station_name": f"{s} Well {i + 1}",
                 "state":        s,
                 "district":     f"District {i + 1}",
                 "block":        f"Block {i + 1}",
-                "latitude":     round(cfg["lat"] + random.uniform(-1, 1), 4),
-                "longitude":    round(cfg["lon"] + random.uniform(-1, 1), 4),
-                "aquifer_type": random.choice(["Alluvial", "Hard Rock", "Basalt"]),
-                "well_depth_m": round(random.uniform(25, 80), 1),
+                "latitude":     round(cfg["lat"] + rng.uniform(-1, 1), 4),
+                "longitude":    round(cfg["lon"] + rng.uniform(-1, 1), 4),
+                "aquifer_type": rng.choice(["Alluvial", "Hard Rock", "Basalt"]),
+                "well_depth_m": round(rng.uniform(25, 80), 1),
                 "station_type": "DWLR",
             })
             n += 1
@@ -394,10 +396,11 @@ def _generate_sample_readings(
     rows     = []
 
     for _, stn in stations.iterrows():
-        wl = base_wl + random.uniform(-2, 2)
+        rng = random.Random(f"readings:{stn['station_id']}:{days}")
+        wl = base_wl + rng.uniform(-2, 2)
         ts = datetime.now() - timedelta(days=days)
         while ts <= datetime.now():
-            wl += random.uniform(-0.03, 0.02)
+            wl += rng.uniform(-0.03, 0.02)
             wl  = round(max(1.0, wl), 2)
             rows.append({
                 "station_id":    stn["station_id"],
@@ -406,7 +409,7 @@ def _generate_sample_readings(
                 "district":      stn["district"],
                 "timestamp":     ts,
                 "water_level_m": wl,
-                "data_quality":  random.choices(
+                "data_quality":  rng.choices(
                     ["Good", "Suspect", "Bad"],
                     weights=[90, 7, 3],
                 )[0],
@@ -415,9 +418,9 @@ def _generate_sample_readings(
 
     return pd.DataFrame(rows)
 
-def _generate_sample_rainfall(stations_df):
+def _generate_sample_rainfall(stations_df, days: int = 365):
     """
-    Generate one year of synthetic daily rainfall for Task 2.
+    Generate synthetic daily rainfall for Task 2.
     Monsoon months (Jul-Sep) get heavy rain, other months get minimal.
     """
     import random
@@ -428,7 +431,7 @@ def _generate_sample_rainfall(stations_df):
  
     rows = []
     end_date   = datetime.now().date()
-    start_date = end_date - timedelta(days=365)
+    start_date = end_date - timedelta(days=max(days, 30))
  
     # Get unique state-district pairs
     if "district" in stations_df.columns:
@@ -437,20 +440,21 @@ def _generate_sample_rainfall(stations_df):
         pairs = [{"state": s, "district": "District 1"} for s in stations_df["state"].unique()]
  
     for pair in pairs:
+        rng = random.Random(f"rainfall:{pair['state']}:{pair['district']}:{days}")
         current = start_date
         while current <= end_date:
             month = current.month
             if month in [7, 8, 9]:      # Monsoon
-                rainfall = random.uniform(5, 120)
+                rainfall = rng.uniform(5, 120)
             elif month in [6, 10]:       # Pre/post monsoon transition
-                rainfall = random.uniform(1, 40)
+                rainfall = rng.uniform(1, 40)
             elif month in [11, 12, 1]:   # Winter
-                rainfall = random.uniform(0, 8)
+                rainfall = rng.uniform(0, 8)
             else:                         # Summer / pre-monsoon dry
-                rainfall = random.uniform(0, 3)
+                rainfall = rng.uniform(0, 3)
  
             # Occasional heavy events
-            if random.random() < 0.05:
+            if rng.random() < 0.08:
                 rainfall *= 3
  
             rows.append({
@@ -463,6 +467,33 @@ def _generate_sample_rainfall(stations_df):
  
     log.info(f"Generated {len(rows)} synthetic rainfall records for Task 2.")
     return pd.DataFrame(rows)
+
+
+def _ensure_rainfall_coverage(
+    stations_df: pd.DataFrame,
+    rainfall_df: pd.DataFrame,
+    days: int,
+) -> pd.DataFrame:
+    """Backfill rainfall for offline/demo runs when station coverage is missing."""
+    if stations_df.empty:
+        return rainfall_df
+
+    required_pairs = {
+        (str(row["state"]).strip().title(), str(row["district"]).strip().title())
+        for _, row in stations_df[["state", "district"]].drop_duplicates().iterrows()
+    }
+    provided_pairs = set()
+    if not rainfall_df.empty and {"state", "district"}.issubset(rainfall_df.columns):
+        provided_pairs = {
+            (str(row["state"]).strip().title(), str(row["district"]).strip().title())
+            for _, row in rainfall_df[["state", "district"]].drop_duplicates().iterrows()
+        }
+
+    if not rainfall_df.empty and required_pairs.issubset(provided_pairs):
+        return rainfall_df
+
+    log.info("Rainfall coverage incomplete for fallback data — generating synthetic rainfall.")
+    return _generate_sample_rainfall(stations_df, days=max(days, 365))
 
 
 # ═══════════════════════════════════════════════════════════════
@@ -541,10 +572,14 @@ def run_once(
     if source == "sample":
         log.info("Running in SAMPLE mode (offline)")
         stations_df = _generate_sample_stations(state)
-        readings_df = _generate_sample_readings(state or "Rajasthan", district, days)
-        rainfall_df = pd.DataFrame(
-            columns=["state", "district", "date", "rainfall_mm"]
-        )
+        if state:
+            readings_df = _generate_sample_readings(state, district, days)
+        else:
+            readings_df = pd.concat(
+                [_generate_sample_readings(s, district, days) for s in ALL_STATES],
+                ignore_index=True,
+            )
+        rainfall_df = _generate_sample_rainfall(stations_df, days=max(days, 365))
     else:
         session = make_session()
 
@@ -570,6 +605,7 @@ def run_once(
         log.info("Step 3/3 — Fetching IMD rainfall …")
         states_list = [state] if state else ALL_STATES
         rainfall_df = fetch_rainfall(session, states_list)
+        rainfall_df = _ensure_rainfall_coverage(stations_df, rainfall_df, days)
 
     # Save raw files
     ts = datetime.now().strftime("%Y%m%d_%H%M%S")
