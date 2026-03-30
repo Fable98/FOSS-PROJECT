@@ -125,8 +125,10 @@ def _readings_to_df(rows) -> pd.DataFrame:
         "is_anomaly":        r.is_anomaly or False,
         "anomaly_reason":    r.anomaly_reason or "",
     } for r in rows])
-    # Ensure timestamp is timezone-aware
-    if not df.empty and hasattr(df["timestamp"].iloc[0], "tzinfo"):
-        if df["timestamp"].iloc[0] is None or df["timestamp"].iloc[0].tzinfo is None:
-            df["timestamp"] = pd.to_datetime(df["timestamp"]).dt.tz_localize("Asia/Kolkata")
+
+    if df.empty:
+        return df
+
+    # Safely handle timezone — works whether timestamps are naive or aware
+    df["timestamp"] = pd.to_datetime(df["timestamp"], utc=True)
     return df

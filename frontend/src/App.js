@@ -1,8 +1,11 @@
 import React, { useState, useEffect, useRef, useCallback } from 'react';
 import './App.css';
 import { Task1Detail, Task2Detail, Task3Detail } from './TaskDetail';
+import StateRanking from './StateRanking.js';
 
-const API = 'http://127.0.0.1:8000/api';
+const API_BASE = (process.env.REACT_APP_API_URL || '').replace(/\/$/, '');
+const API = `${API_BASE}/api`;
+const REFRESH_MS = 15 * 60 * 1000; // 15 minutes
 
 const STATUS = {
   safe:           { label: 'Safe',           color: '#00e5a0', glow: '0 0 20px #00e5a040' },
@@ -94,11 +97,11 @@ function IndiaMap({ stations, onSelect, selected }) {
   );
 }
 
-function Sparkline({ data, color = '#00c8ff', height = 60 }) {
+function Sparkline({ data, color = '#00c8ff' }) {
   if (!data || data.length < 2) return <div className="sparkline-empty">No trend data</div>;
   const vals = data.map(d => d.avg_level_m || 0);
   const min = Math.min(...vals), max = Math.max(...vals), range = max - min || 1;
-  const w = 280, h = height;
+  const w = 280, h = 60;
   const pts = vals.map((v,i) => `${(i/(vals.length-1))*w},${h-((v-min)/range)*(h-10)-5}`).join(' ');
   return (
     <svg viewBox={`0 0 ${w} ${h}`} className="sparkline">
@@ -107,6 +110,18 @@ function Sparkline({ data, color = '#00c8ff', height = 60 }) {
       <polyline points={pts} fill="none" stroke={color} strokeWidth="1.5" />
     </svg>
   );
+}
+
+// ── Last updated timestamp ─────────────────────────────────────
+function LiveClock() {
+  const [time, setTime] = useState('');
+  useEffect(() => {
+    const update = () => setTime(new Date().toLocaleTimeString('en-IN', { hour: '2-digit', minute: '2-digit' }));
+    update();
+    const t = setInterval(update, 60000);
+    return () => clearInterval(t);
+  }, []);
+  return <>{time}</>;
 }
 
 export default function App() {
@@ -118,35 +133,56 @@ export default function App() {
   const [task3, setTask3]       = useState(null);
   const [alerts, setAlerts]     = useState([]);
   const [health, setHealth]     = useState(false);
-  const [activeTab, setActiveTab]     = useState('map');
-  const [taskPage, setTaskPage]       = useState(null); // 'task1' | 'task2' | 'task3'
+  const [activeTab, setActiveTab]           = useState('map');
+  const [taskPage, setTaskPage]             = useState(null);
   const [loadingStation, setLoadingStation] = useState(false);
+  const [lastRefresh, setLastRefresh]       = useState(null);
+
+  // Assign status from water level if available, else random
+  const assignStatus = (s) => {
+    const lvl = s.current_level_m || s.water_level_m;
+    if (lvl != null) {
+      if (lvl < 8)  return { ...s, status: 'safe' };
+      if (lvl < 15) return { ...s, status: 'semi_critical' };
+      if (lvl < 25) return { ...s, status: 'critical' };
+      return { ...s, status: 'over_exploited' };
+    }
+    return { ...s, status: ['safe','semi_critical','critical','over_exploited'][Math.floor(Math.random()*4)] };
+  };
+
+  const loadStations = useCallback(async () => {
+    try {
+      const [hRes, sRes, aRes] = await Promise.all([
+        fetch(`${API}/health`),
+        fetch(`${API}/stations`),
+        fetch(`${API}/alerts`),
+      ]);
+      const hData = await hRes.json(); setHealth(hData.db);
+      if (sRes.ok) { const d = await sRes.json(); setStations(d.map(assignStatus)); }
+      if (aRes.ok) { const d = await aRes.json(); setAlerts(d.alerts || []); }
+      setLastRefresh(new Date());
+    } catch(e) { console.error(e); }
+  }, []);
 
   useEffect(() => {
-    const init = async () => {
-      try {
-        const [hRes, sRes, aRes] = await Promise.all([fetch(`${API}/health`), fetch(`${API}/stations`), fetch(`${API}/alerts`)]);
-        const hData = await hRes.json(); setHealth(hData.db);
-        if (sRes.ok) { const sData = await sRes.json(); setStations(sData.map(s => ({ ...s, status: ['safe','semi_critical','critical','over_exploited'][Math.floor(Math.random()*4)] }))); }
-        if (aRes.ok) { const aData = await aRes.json(); setAlerts(aData.alerts || []); }
-      } catch(e) { console.error(e); }
-      setLoading(false);
-    };
-    init();
-  }, []);
+    loadStations().finally(() => setLoading(false));
+    // Auto-refresh every 15 minutes
+    const interval = setInterval(loadStations, REFRESH_MS);
+    return () => clearInterval(interval);
+  }, [loadStations]);
 
   const selectStation = useCallback(async (station) => {
     setSelected(station); setTask1(null); setTask2(null); setTask3(null);
     setLoadingStation(true); setActiveTab('detail'); setTaskPage(null);
     try {
       const [t1,t2,t3] = await Promise.allSettled([
-        fetch(`${API}/task1/${station.station_id}`).then(r=>r.json()),
-        fetch(`${API}/task2/${station.station_id}`).then(r=>r.json()),
-        fetch(`${API}/task3/${station.station_id}`).then(r=>r.json()),
+        fetch(`${API}/task1/${station.station_id}?hours=720`).then(r=>r.json()),
+        fetch(`${API}/task2/${station.station_id}?days=365`).then(r=>r.json()),
+        fetch(`${API}/task3/${station.station_id}?days=365`).then(r=>r.json()),
       ]);
-      if (t1.status==='fulfilled' && !t1.value.error) setTask1(t1.value);
-      if (t2.status==='fulfilled' && !t2.value.error) setTask2(t2.value);
-      if (t3.status==='fulfilled' && !t3.value.error) setTask3(t3.value);
+      if (t1.status==="fulfilled" && !t1.value?.error && !t1.value?.detail && t1.value?.station_id) setTask1(t1.value);
+      if (t2.status==="fulfilled" && !t2.value?.detail && !t2.value?.error) setTask2(t2.value);
+      if (t3.status==="fulfilled" && t3.value?.current_level_m != null) setTask3(t3.value);
     } catch(e) { console.error(e); }
     setLoadingStation(false);
   }, []);
@@ -164,10 +200,9 @@ export default function App() {
     </div>
   );
 
-  // ── Task detail pages ──
-  if (taskPage === 'task1' && selected) return <div className="app"><OceanCursor /><Task1Detail station={selected} onBack={() => setTaskPage(null)} /></div>;
-  if (taskPage === 'task2' && selected) return <div className="app"><OceanCursor /><Task2Detail station={selected} onBack={() => setTaskPage(null)} /></div>;
-  if (taskPage === 'task3' && selected) return <div className="app"><OceanCursor /><Task3Detail station={selected} onBack={() => setTaskPage(null)} /></div>;
+  if (taskPage === 'task1' && selected) return <div className="app"><OceanCursor /><div className="main" style={{paddingTop:'1.5rem'}}><Task1Detail station={selected} onBack={() => setTaskPage(null)} /></div></div>;
+  if (taskPage === 'task2' && selected) return <div className="app"><OceanCursor /><div className="main" style={{paddingTop:'1.5rem'}}><Task2Detail station={selected} onBack={() => setTaskPage(null)} /></div></div>;
+  if (taskPage === 'task3' && selected) return <div className="app"><OceanCursor /><div className="main" style={{paddingTop:'1.5rem'}}><Task3Detail station={selected} onBack={() => setTaskPage(null)} /></div></div>;
 
   return (
     <div className="app">
@@ -180,8 +215,9 @@ export default function App() {
         </div>
         <div className="header-stats">
           <div className="hstat"><span className="hstat-val"><Counter value={stations.length} /></span><span className="hstat-lbl">Stations</span></div>
-          <div className="hstat"><span className="hstat-val"><Counter value={alerts.length} /></span><span className="hstat-lbl">Alerts</span></div>
-          <div className="hstat"><span className="hstat-val">15<span style={{fontSize:'0.6em'}}>min</span></span><span className="hstat-lbl">Refresh</span></div>
+          <div className="hstat"><span className="hstat-val" style={{color: alerts.length > 0 ? '#ff6b4a' : '#00e5a0'}}><Counter value={alerts.length} /></span><span className="hstat-lbl">Alerts</span></div>
+          <div className="hstat"><span className="hstat-val"><LiveClock /></span><span className="hstat-lbl">Last Update</span></div>
+          <button className="refresh-btn" onClick={loadStations} title="Refresh now">↻</button>
         </div>
         <div className="header-right">
           <div className={`db-status ${health?'online':'offline'}`}><span className="db-dot" />{health?'DB Connected':'DB Offline'}</div>
@@ -190,16 +226,26 @@ export default function App() {
       </header>
 
       <nav className="nav">
-        {['map','alerts','about'].map(tab => (
-          <button key={tab} className={`nav-btn ${activeTab===tab?'active':''}`} onClick={() => setActiveTab(tab)}>
-            {tab==='map'&&'🗺️ Live Map'}{tab==='alerts'&&`⚡ Alerts ${alerts.length>0?`(${alerts.length})`:''}`}{tab==='about'&&'📊 Overview'}
-          </button>
+        {[
+          {id:'map',    label:'🗺️ Live Map'},
+          {id:'ranking',label:'🏆 State Ranking'},
+          {id:'alerts', label:`⚡ Alerts${alerts.length>0?` (${alerts.length})`:''}`},
+          {id:'about',  label:'📊 Overview'},
+        ].map(tab => (
+          <button key={tab.id} className={`nav-btn ${activeTab===tab.id?'active':''}`}
+            onClick={() => setActiveTab(tab.id)}>{tab.label}</button>
         ))}
-        {selected && <button className={`nav-btn ${activeTab==='detail'?'active':''}`} onClick={() => { setActiveTab('detail'); setTaskPage(null); }}>🔍 {selected.station_name||selected.station_id}</button>}
+        {selected && (
+          <button className={`nav-btn ${activeTab==='detail'?'active':''}`}
+            onClick={() => { setActiveTab('detail'); setTaskPage(null); }}>
+            🔍 {selected.station_name || selected.station_id}
+          </button>
+        )}
       </nav>
 
       <main className="main">
 
+        {/* MAP */}
         {activeTab === 'map' && (
           <div className="tab-map">
             <div className="map-panel">
@@ -234,6 +280,12 @@ export default function App() {
           </div>
         )}
 
+        {/* RANKING */}
+        {activeTab === 'ranking' && (
+          <StateRanking onSelectStation={selectStation} />
+        )}
+
+        {/* DETAIL */}
         {activeTab === 'detail' && selected && (
           <div className="tab-detail">
             <div className="detail-header">
@@ -244,6 +296,7 @@ export default function App() {
               <div className="detail-badges">
                 <span className="detail-badge">ID: {selected.station_id}</span>
                 {selected.well_depth_m && <span className="detail-badge">Depth: {selected.well_depth_m}m</span>}
+                <a href={`${API}/export/${selected.station_id}/csv`} className="export-badge" download>⬇ CSV</a>
               </div>
             </div>
 
@@ -251,22 +304,16 @@ export default function App() {
               <div className="loading-row"><div className="pulse-dots"><span/><span/><span/></div><span>Fetching analysis...</span></div>
             ) : (
               <div className="detail-grid">
-
-                {/* Task 1 card — clickable */}
+                {/* Task 1 */}
                 <div className="detail-card clickable-card" onClick={() => setTaskPage('task1')}>
-                  <div className="dc-header">
-                    <span className="dc-icon">📊</span>
-                    <span className="dc-title">Fluctuation Analysis</span>
-                    <span className="dc-tag">Task 1</span>
-                    <span className="dc-arrow">→</span>
-                  </div>
+                  <div className="dc-header"><span className="dc-icon">📊</span><span className="dc-title">Fluctuation Analysis</span><span className="dc-tag">Task 1</span><span className="dc-arrow">→</span></div>
                   {task1 ? (<>
                     <div className="dc-big">{task1.current_level_m??'—'}<span className="dc-unit">m</span></div>
                     <div className="dc-label">Current Water Level</div>
                     <div className="dc-stats">
-                      <div className="dc-stat"><span className={`dc-rate ${task1.rate_per_day>0?'bad':'good'}`}>{task1.rate_per_day>0?'↑':'↓'} {Math.abs(task1.rate_per_day).toFixed(3)}m</span><span>per day</span></div>
+                      <div className="dc-stat"><span className={`dc-rate ${task1.rate_per_day>0?'bad':'good'}`}>{task1.rate_per_day>0?'↑':'↓'} {Math.abs(task1.rate_per_day||0).toFixed(3)}m</span><span>per day</span></div>
                       <div className="dc-stat"><span className="dc-val">{task1.trend_direction}</span><span>trend</span></div>
-                      <div className="dc-stat"><span className="dc-val">{task1.seasonal_phase?.replace('_',' ')}</span><span>season</span></div>
+                      <div className="dc-stat"><span className="dc-val">{(task1.seasonal_phase||'').replace('_',' ')}</span><span>season</span></div>
                     </div>
                     {task1.moving_average?.length>0 && <Sparkline data={task1.moving_average} color="#00c8ff" />}
                     {task1.anomalies?.length>0 && <div className="dc-alert">⚠️ {task1.anomalies.length} anomal{task1.anomalies.length===1?'y':'ies'} detected</div>}
@@ -274,58 +321,51 @@ export default function App() {
                   </>) : <div className="dc-empty">No fluctuation data available</div>}
                 </div>
 
-                {/* Task 2 card — clickable */}
+                {/* Task 2 */}
                 <div className="detail-card clickable-card" onClick={() => setTaskPage('task2')}>
-                  <div className="dc-header">
-                    <span className="dc-icon">🌧️</span>
-                    <span className="dc-title">Recharge Estimation</span>
-                    <span className="dc-tag">Task 2</span>
-                    <span className="dc-arrow">→</span>
-                  </div>
+                  <div className="dc-header"><span className="dc-icon">🌧️</span><span className="dc-title">Recharge Estimation</span><span className="dc-tag">Task 2</span><span className="dc-arrow">→</span></div>
                   {task2 ? (<>
-                    <div className="dc-big">{task2.recharge_rate_m_per_day?.toFixed(4)??'—'}<span className="dc-unit">m/day</span></div>
+                    <div className="dc-big">{(task2.recharge_rate_m_per_day||0).toFixed(4)}<span className="dc-unit">m/day</span></div>
                     <div className="dc-label">Recharge Rate</div>
                     <div className="dc-stats">
-                      <div className="dc-stat"><span className="dc-val">{task2.lag_hours?.toFixed(1)??'—'}h</span><span>lag time</span></div>
+                      <div className="dc-stat"><span className="dc-val">{(task2.lag_hours||0).toFixed(1)}h</span><span>lag time</span></div>
                       <div className="dc-stat"><span className="dc-val">{task2.net_recharge_m!=null?`${task2.net_recharge_m>0?'+':''}${task2.net_recharge_m}m`:'—'}</span><span>net recharge</span></div>
-                      <div className="dc-stat"><span className="dc-val">{task2.aquifer_type}</span><span>aquifer</span></div>
+                      <div className="dc-stat"><span className="dc-val">{task2.aquifer_type||'—'}</span><span>aquifer</span></div>
                     </div>
-                    <div className="zone-badge" style={{color:task2.zone_status==='good_recharge'?'#00e5a0':task2.zone_status==='critically_stressed'?'#ff2d55':'#f5c842'}}>{task2.zone_status?.replace(/_/g,' ').toUpperCase()}</div>
+                    <div className="zone-badge" style={{color:task2.zone_status==='good_recharge'?'#00e5a0':task2.zone_status==='critically_stressed'?'#ff2d55':'#f5c842'}}>{(task2.zone_status||'').replace(/_/g,' ').toUpperCase()}</div>
                     <div className="dc-click-hint">Click for full analysis →</div>
                   </>) : <div className="dc-empty">No recharge data available</div>}
                 </div>
 
-                {/* Task 3 card — clickable */}
+                {/* Task 3 */}
                 <div className="detail-card clickable-card" onClick={() => setTaskPage('task3')}>
-                  <div className="dc-header">
-                    <span className="dc-icon">🎯</span>
-                    <span className="dc-title">Resource Evaluation</span>
-                    <span className="dc-tag">Task 3</span>
-                    <span className="dc-arrow">→</span>
-                  </div>
+                  <div className="dc-header"><span className="dc-icon">🎯</span><span className="dc-title">Resource Evaluation</span><span className="dc-tag">Task 3</span><span className="dc-arrow">→</span></div>
                   {task3 ? (<>
                     <div className="dc-big" style={{color:STATUS[task3.status]?.color}}>{task3.resource_availability_index?.toFixed(1)??'—'}<span className="dc-unit">/100</span></div>
                     <div className="dc-label">Resource Availability Index</div>
                     <div className="rai-bar"><div className="rai-fill" style={{width:`${task3.resource_availability_index||0}%`,background:STATUS[task3.status]?.color||'#4a6fa5'}} /></div>
                     <div className="dc-stats">
                       <div className="dc-stat"><span className="dc-val" style={{color:STATUS[task3.status]?.color}}>{task3.status_label}</span><span>CGWB status</span></div>
-                      <div className="dc-stat"><span className="dc-val">{task3.annual_depletion_rate_m?.toFixed(3)??'—'}m</span><span>depletion/yr</span></div>
+                      <div className="dc-stat"><span className="dc-val">{(task3.annual_depletion_rate_m||0).toFixed(3)}m</span><span>depletion/yr</span></div>
                       <div className="dc-stat"><span className="dc-val">{task3.years_to_depletion!=null?`${task3.years_to_depletion}yr`:'♾️'}</span><span>to depletion</span></div>
                     </div>
                     {task3.alert_required && <div className="dc-alert critical">🚨 ALERT: Immediate intervention required</div>}
                     <div className="dc-click-hint">Click for full analysis →</div>
                   </>) : <div className="dc-empty">No evaluation data available</div>}
                 </div>
-
               </div>
             )}
             {(task1||task3) && <div className="summary-box"><div className="summary-title">📋 Analysis Summary</div><p>{task1?.summary||task3?.summary}</p></div>}
           </div>
         )}
 
+        {/* ALERTS */}
         {activeTab === 'alerts' && (
           <div className="tab-alerts">
-            <div className="alerts-header"><div className="alerts-title">⚡ Active Alerts</div><div className="alerts-count">{alerts.length} stations require attention</div></div>
+            <div className="alerts-header">
+              <div className="alerts-title">⚡ Active Alerts</div>
+              <div className="alerts-count">{alerts.length} stations require attention</div>
+            </div>
             {alerts.length===0 ? (
               <div className="no-alerts"><div className="na-icon">✅</div><div className="na-text">No active alerts</div><div className="na-sub">All monitored stations within normal parameters</div></div>
             ) : (
@@ -344,26 +384,27 @@ export default function App() {
           </div>
         )}
 
+        {/* OVERVIEW */}
         {activeTab === 'about' && (
           <div className="tab-about">
             <div className="about-hero">
               <div className="about-title">Real-Time Groundwater Intelligence</div>
-              <div className="about-sub">SubTerra monitors 5,260 DWLR stations across India, delivering live analysis of water level fluctuations, recharge estimation, and resource evaluation using CGWB classification standards.</div>
+              <div className="about-sub">SubTerra monitors 5,260 DWLR stations across India using live CGWB sensor data, delivering fluctuation analysis, recharge estimation, and resource evaluation.</div>
             </div>
             <div className="about-grid">
-              <div className="about-card"><div className="about-icon">📊</div><div className="about-card-title">Task 1 — Fluctuation</div><p>Rate of water level change per hour, day, week. 7-day moving average. Anomaly detection via rolling Z-score.</p></div>
-              <div className="about-card"><div className="about-icon">🌧️</div><div className="about-card-title">Task 2 — Recharge</div><p>Dynamic recharge estimation by correlating DWLR readings with IMD rainfall. Pre/post monsoon net recharge calculation.</p></div>
-              <div className="about-card"><div className="about-icon">🎯</div><div className="about-card-title">Task 3 — Evaluation</div><p>CGWB zone classification: Safe / Semi-Critical / Critical / Over-Exploited. Years to depletion. Resource Availability Index.</p></div>
-              <div className="about-card"><div className="about-icon">⚡</div><div className="about-card-title">Live Pipeline</div><p>Scraper fetches India-WRIS GeoServer every 15 minutes. 10-step cleaning pipeline. TimescaleDB with 7-day hypertable chunks.</p></div>
+              <div className="about-card"><div className="about-icon">📊</div><div className="about-card-title">Task 1 — Fluctuation</div><p>Rate of water level change per hour, day, week. 7-day moving average trend. Anomaly detection via rolling Z-score (3σ threshold).</p></div>
+              <div className="about-card"><div className="about-icon">🌧️</div><div className="about-card-title">Task 2 — Recharge</div><p>Dynamic recharge estimation correlating DWLR readings with IMD rainfall. Pre/post monsoon net recharge. Aquifer-type lag analysis.</p></div>
+              <div className="about-card"><div className="about-icon">🎯</div><div className="about-card-title">Task 3 — Evaluation</div><p>CGWB zone classification: Safe / Semi-Critical / Critical / Over-Exploited. Years to depletion. Resource Availability Index (0–100).</p></div>
+              <div className="about-card"><div className="about-icon">🏆</div><div className="about-card-title">State Ranking</div><p>All states ranked by average water level and RAI score. District-level drill-down. Export to CSV for further analysis.</p></div>
             </div>
             <div className="cgwb-table">
               <div className="ct-title">CGWB Classification Standards</div>
               <div className="ct-grid">
                 {[
-                  {status:'safe',level:'< 8m',stage:'< 70%',action:'Monitor regularly'},
-                  {status:'semi_critical',level:'8–15m',stage:'70–90%',action:'Reduce extraction'},
-                  {status:'critical',level:'15–25m',stage:'90–100%',action:'Strict regulation'},
-                  {status:'over_exploited',level:'> 25m',stage:'> 100%',action:'Immediate intervention'},
+                  {status:'safe',          level:'< 8m',   stage:'< 70%',   action:'Monitor regularly'},
+                  {status:'semi_critical', level:'8–15m',  stage:'70–90%',  action:'Reduce extraction'},
+                  {status:'critical',      level:'15–25m', stage:'90–100%', action:'Strict regulation'},
+                  {status:'over_exploited',level:'> 25m',  stage:'> 100%',  action:'Immediate intervention'},
                 ].map(row => (
                   <div key={row.status} className="ct-row">
                     <div className="ct-dot" style={{background:STATUS[row.status].color}} />

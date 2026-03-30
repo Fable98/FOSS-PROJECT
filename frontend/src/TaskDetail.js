@@ -1,7 +1,8 @@
 import React, { useState, useEffect } from 'react';
 import './TaskDetail.css';
 
-const API = 'http://127.0.0.1:8000/api';
+const API_BASE = (process.env.REACT_APP_API_URL || '').replace(/\/$/, '');
+const API = `${API_BASE}/api`;
 
 function PieChart({ slices, size = 120 }) {
   const r = size / 2 - 8, cx = size / 2, cy = size / 2;
@@ -94,15 +95,14 @@ function BarChart({ data, xKey, yKey, color='#00c8ff', height=160 }) {
   );
 }
 
-// FIX: Gauge - correct large arc flag calculation
 function Gauge({ value, max=100, color='#00c8ff', label='' }) {
   const pct = Math.min(1, Math.max(0, (value||0) / (max||100)));
   const angle = pct * Math.PI;
   const r=70, cx=100, cy=90;
   const endX = cx + r * Math.cos(Math.PI - angle);
   const endY = cy - r * Math.sin(angle);
-  // FIX: large arc when angle > PI/2 (more than half the gauge)
-  const large = angle > Math.PI / 2 ? 1 : 0;
+  // This gauge only renders the top semicircle, so the path never exceeds 180deg.
+  const large = 0;
   const displayVal = typeof value === 'number' ? (value > 999 ? value.toFixed(0) : value.toFixed(1)) : '—';
   return (
     <svg viewBox="0 0 200 110" className="gauge-chart">
