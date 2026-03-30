@@ -178,10 +178,6 @@ def _compute_trend(df: pd.DataFrame) -> dict:
 # ═══════════════════════════════════════════════════════════════
 
 def _compute_moving_average(df: pd.DataFrame) -> list[dict]:
-    """
-    Compute 7-day rolling average of water level.
-    Returns last 30 data points for chart rendering.
-    """
     df = df.copy()
     df["moving_avg_7d"] = (
         df["water_level_m"]
@@ -190,7 +186,11 @@ def _compute_moving_average(df: pd.DataFrame) -> list[dict]:
         .round(3)
     )
 
-    # Return last 30 daily averages for frontend charts
+    # FIX — convert to UTC and remove tz before resampling
+    ts = pd.to_datetime(df["timestamp"]).dt.tz_convert("UTC").dt.tz_localize(None)
+    df = df.copy()
+    df["timestamp"] = ts
+
     daily = (
         df.set_index("timestamp")
         .resample("D")["water_level_m"]
@@ -203,8 +203,8 @@ def _compute_moving_average(df: pd.DataFrame) -> list[dict]:
 
     return [
         {
-            "date":          row["timestamp"].strftime("%Y-%m-%d"),
-            "avg_level_m":   round(row["water_level_m"], 3),
+            "date":        row["timestamp"].strftime("%Y-%m-%d"),
+            "avg_level_m": round(row["water_level_m"], 3),
         }
         for _, row in daily.iterrows()
     ]
@@ -226,9 +226,9 @@ def _detect_anomalies(df: pd.DataFrame) -> list[dict]:
     anomalies = []
 
     # Sudden drops (over-extraction signal)
-    hourly = df.set_index("timestamp").resample("H")["water_level_m"].mean().reset_index()
+    hourly = df.set_index("timestamp").resample("h")["water_level_m"].mean().reset_index()
     hourly["diff"] = hourly["water_level_m"].diff()
-    drops = hourly[hourly["diff"] > SUDDEN_DROP_THRESHOLD_M]
+    drops = hourly[hourly["diff"].abs() > SUDDEN_DROP_THRESHOLD_M]
 
     for _, row in drops.iterrows():
         anomalies.append({
