@@ -394,6 +394,7 @@ def _generate_sample_readings(
 ) -> pd.DataFrame:
     """Generate realistic synthetic DWLR readings every 15 minutes."""
     import random
+    import math
     base_wl_map = {
         "Rajasthan": 18.0, "Gujarat": 22.0, "Maharashtra": 8.0,
         "Uttar Pradesh": 6.0, "Punjab": 12.0, "Haryana": 11.0,
@@ -404,11 +405,36 @@ def _generate_sample_readings(
 
     for _, stn in stations.iterrows():
         rng = random.Random(f"readings:{stn['station_id']}:{days}")
-        wl = base_wl + rng.uniform(-2, 2)
+        station_bias = rng.uniform(-2.8, 2.8)
+        long_term_trend = rng.uniform(-0.015, 0.02) / 24
+        seasonal_amp = rng.uniform(0.6, 2.2)
+        daily_amp = rng.uniform(0.02, 0.12)
+        monsoon_gain = rng.uniform(0.8, 2.4)
+        recharge_pulse_remaining = 0.0
         ts = datetime.now() - timedelta(days=days)
+        start_ts = ts
         while ts <= datetime.now():
-            wl += rng.uniform(-0.03, 0.02)
-            wl  = round(max(1.0, wl), 2)
+            elapsed_days = (ts - start_ts).total_seconds() / 86400
+            day_fraction = (ts.hour * 60 + ts.minute) / 1440
+            seasonal_wave = seasonal_amp * math.sin((elapsed_days / max(days, 30)) * 2 * math.pi)
+            daily_wave = daily_amp * math.sin(day_fraction * 2 * math.pi)
+
+            # Monsoon months get shallower readings (recharge / recovery).
+            monsoon_component = 0.0
+            if ts.month in [7, 8, 9]:
+                monsoon_component = -monsoon_gain
+            elif ts.month in [6, 10]:
+                monsoon_component = -(monsoon_gain * 0.45)
+
+            # Occasional recharge pulses in wetter months produce short recoveries.
+            if ts.hour == 0 and ts.minute == 0 and ts.month in [6, 7, 8, 9, 10] and rng.random() < 0.22:
+                recharge_pulse_remaining = rng.uniform(0.15, 0.6)
+            pulse_effect = -recharge_pulse_remaining
+            recharge_pulse_remaining = max(0.0, recharge_pulse_remaining * 0.94)
+
+            noise = rng.uniform(-0.025, 0.025)
+            wl = base_wl + station_bias + (elapsed_days * long_term_trend) + seasonal_wave + daily_wave + monsoon_component + pulse_effect + noise
+            wl = round(max(1.0, wl), 2)
             rows.append({
                 "station_id":    stn["station_id"],
                 "station_name":  stn["station_name"],
