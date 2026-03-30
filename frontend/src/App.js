@@ -71,8 +71,10 @@ function Counter({ value }) {
 
 function StationDot({ station, onClick, selected }) {
   const s = STATUS[station.status] || STATUS.unknown;
-  const x = ((station.longitude - 68) / 30) * 340 + 30;
-  const y = ((38 - station.latitude) / 32) * 380 + 20;
+  const minLon = 68, maxLon = 98;
+  const minLat = 6, maxLat = 38;
+  const x = ((station.longitude - minLon) / (maxLon - minLon)) * 314 + 43;
+  const y = ((maxLat - station.latitude) / (maxLat - minLat)) * 352 + 26;
   return (
     <g onClick={() => onClick(station)} style={{ cursor: 'pointer' }}>
       {selected && <circle cx={x} cy={y} r={14} fill="none" stroke={s.color} strokeWidth={2} opacity={0.5}><animate attributeName="r" values="10;18;10" dur="2s" repeatCount="indefinite" /><animate attributeName="opacity" values="0.5;0.1;0.5" dur="2s" repeatCount="indefinite" /></circle>}
@@ -87,9 +89,37 @@ function IndiaMap({ stations, onSelect, selected }) {
       <defs>
         <filter id="glow"><feGaussianBlur stdDeviation="3" result="blur" /><feMerge><feMergeNode in="blur" /><feMergeNode in="SourceGraphic" /></feMerge></filter>
         <radialGradient id="mapBg" cx="50%" cy="50%" r="50%"><stop offset="0%" stopColor="#0a2040" /><stop offset="100%" stopColor="#050d1a" /></radialGradient>
+        <linearGradient id="indiaFill" x1="0" y1="0" x2="0" y2="1">
+          <stop offset="0%" stopColor="#102b4a" stopOpacity="0.55" />
+          <stop offset="100%" stopColor="#071222" stopOpacity="0.95" />
+        </linearGradient>
       </defs>
       <rect width="400" height="420" fill="url(#mapBg)" rx="12" />
-      <path d="M 180 25 L 220 22 L 270 35 L 300 55 L 320 80 L 330 110 L 345 130 L 350 160 L 340 185 L 355 200 L 360 225 L 345 255 L 320 280 L 290 310 L 260 340 L 230 370 L 210 390 L 195 380 L 175 355 L 155 330 L 130 300 L 110 270 L 90 240 L 75 210 L 70 180 L 80 155 L 75 130 L 85 105 L 100 80 L 120 60 L 150 40 Z" fill="none" stroke="#1a3a5c" strokeWidth="1.5" opacity="0.7" />
+      <path
+        d="M123 49
+           L145 38 L182 34 L220 38 L252 48 L287 66 L313 94
+           L332 126 L350 143 L359 171 L352 198 L337 223
+           L322 248 L328 273 L346 294 L350 326 L339 357
+           L321 376 L301 394 L287 407 L271 394 L256 367
+           L244 342 L229 317 L214 292 L203 262 L189 248
+           L173 259 L153 286 L132 281 L120 252 L108 220
+           L95 196 L83 169 L76 143 L83 120 L95 102
+           L107 84 L117 65 Z"
+        fill="url(#indiaFill)"
+        stroke="#1d4670"
+        strokeWidth="2.2"
+        opacity="0.95"
+      />
+      <path
+        d="M317 109 L332 100 L348 103 L357 114 L353 126 L338 130 L324 123 Z"
+        fill="url(#indiaFill)"
+        stroke="#1d4670"
+        strokeWidth="1.8"
+        opacity="0.9"
+      />
+      <circle cx="308" cy="351" r="2.2" fill="#1d4670" opacity="0.7" />
+      <circle cx="312" cy="365" r="2" fill="#1d4670" opacity="0.65" />
+      <circle cx="316" cy="378" r="1.7" fill="#1d4670" opacity="0.6" />
       {[0.25,0.5,0.75].map(t => (<React.Fragment key={t}><line x1={30+t*340} y1="20" x2={30+t*340} y2="400" stroke="#0c2a45" strokeWidth="1" strokeDasharray="3,6" /><line x1="30" y1={20+t*380} x2="370" y2={20+t*380} stroke="#0c2a45" strokeWidth="1" strokeDasharray="3,6" /></React.Fragment>))}
       {stations.map(s => <StationDot key={s.station_id} station={s} onClick={onSelect} selected={selected?.station_id === s.station_id} />)}
       {Object.entries(STATUS).filter(([k]) => k !== 'unknown').map(([key,val],i) => (<g key={key} transform={`translate(15,${320+i*18})`}><circle cx="6" cy="6" r="4" fill={val.color} /><text x="14" y="10" fill="#8ab4d4" fontSize="9" fontFamily="'DM Mono',monospace">{val.label}</text></g>))}
