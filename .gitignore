@@ -20,5 +20,7 @@ Thumbs.dbnode_modules/
 frontend/node_modules/
 
 # Scraper Data
-data/
+data/raw/
+data/processed/
+data/logs/
 *.csv
