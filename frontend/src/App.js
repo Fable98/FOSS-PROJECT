@@ -2,6 +2,7 @@ import React, { useState, useEffect, useRef, useCallback } from 'react';
 import './App.css';
 import { Task1Detail, Task2Detail, Task3Detail } from './TaskDetail';
 import StateRanking from './StateRanking.js';
+import IndiaMapShape from './IndiaMapShape';
 
 const API_BASE = (process.env.REACT_APP_API_URL || '').replace(/\/$/, '');
 const API = `${API_BASE}/api`;
@@ -73,8 +74,8 @@ function StationDot({ station, onClick, selected }) {
   const s = STATUS[station.status] || STATUS.unknown;
   const minLon = 68, maxLon = 98;
   const minLat = 6, maxLat = 38;
-  const x = ((station.longitude - minLon) / (maxLon - minLon)) * 314 + 43;
-  const y = ((maxLat - station.latitude) / (maxLat - minLat)) * 352 + 26;
+  const x = ((station.longitude - minLon) / (maxLon - minLon)) * 430 + 92;
+  const y = ((maxLat - station.latitude) / (maxLat - minLat)) * 650 + 34;
   return (
     <g onClick={() => onClick(station)} style={{ cursor: 'pointer' }}>
       {selected && <circle cx={x} cy={y} r={14} fill="none" stroke={s.color} strokeWidth={2} opacity={0.5}><animate attributeName="r" values="10;18;10" dur="2s" repeatCount="indefinite" /><animate attributeName="opacity" values="0.5;0.1;0.5" dur="2s" repeatCount="indefinite" /></circle>}
@@ -85,7 +86,7 @@ function StationDot({ station, onClick, selected }) {
 
 function IndiaMap({ stations, onSelect, selected }) {
   return (
-    <svg viewBox="0 0 400 420" className="india-map">
+    <svg viewBox="0 0 666.66669 777.33331" className="india-map">
       <defs>
         <filter id="glow"><feGaussianBlur stdDeviation="3" result="blur" /><feMerge><feMergeNode in="blur" /><feMergeNode in="SourceGraphic" /></feMerge></filter>
         <radialGradient id="mapBg" cx="50%" cy="50%" r="50%"><stop offset="0%" stopColor="#0a2040" /><stop offset="100%" stopColor="#050d1a" /></radialGradient>
@@ -94,42 +95,21 @@ function IndiaMap({ stations, onSelect, selected }) {
           <stop offset="100%" stopColor="#071222" stopOpacity="0.95" />
         </linearGradient>
       </defs>
-      <rect width="400" height="420" fill="url(#mapBg)" rx="12" />
-      <path
-        d="M163 26
-           L183 36 L199 32 L211 41 L208 53 L220 62 L236 71
-           L257 92 L282 99 L307 110 L324 133 L342 160
-           L349 189 L342 219 L331 246 L339 275 L357 294
-           L362 324 L350 353 L327 380 L300 403 L286 396
-           L277 378 L261 352 L251 333 L239 312 L226 291
-           L214 265 L203 246 L191 241 L179 251 L166 274
-           L151 286 L136 278 L128 260 L120 243 L109 226
-           L97 207 L89 181 L94 160 L106 138 L114 117
-           L128 96 L143 79 L156 61 L165 44 Z"
-        fill="url(#indiaFill)"
-        stroke="#1d4670"
-        strokeWidth="2.2"
-        opacity="0.95"
-      />
-      <path
-        d="M248 133
-           L264 124 L281 127 L295 137 L308 147 L321 154
-           L333 150 L343 154 L349 164 L344 173 L331 175
-           L318 171 L305 166 L291 163 L278 160 L265 154
-           L255 145 Z"
-        fill="url(#indiaFill)"
-        stroke="#1d4670"
-        strokeWidth="1.8"
-        opacity="0.9"
-      />
-      <path d="M247 146 L255 149 L261 151" fill="none" stroke="#1d4670" strokeWidth="1.5" opacity="0.65" />
-      <circle cx="288" cy="372" r="2.2" fill="#1d4670" opacity="0.72" />
-      <circle cx="292" cy="384" r="1.9" fill="#1d4670" opacity="0.66" />
-      <circle cx="296" cy="396" r="1.6" fill="#1d4670" opacity="0.6" />
-      <circle cx="300" cy="406" r="1.4" fill="#1d4670" opacity="0.54" />
-      {[0.25,0.5,0.75].map(t => (<React.Fragment key={t}><line x1={30+t*340} y1="20" x2={30+t*340} y2="400" stroke="#0c2a45" strokeWidth="1" strokeDasharray="3,6" /><line x1="30" y1={20+t*380} x2="370" y2={20+t*380} stroke="#0c2a45" strokeWidth="1" strokeDasharray="3,6" /></React.Fragment>))}
+      <rect width="666.66669" height="777.33331" fill="url(#mapBg)" rx="12" />
+      <IndiaMapShape />
+      {[0.25,0.5,0.75].map(t => (
+        <React.Fragment key={t}>
+          <line x1={48 + t * 560} y1="28" x2={48 + t * 560} y2="748" stroke="#0c2a45" strokeWidth="1.4" strokeDasharray="4,10" />
+          <line x1="48" y1={28 + t * 720} x2="618" y2={28 + t * 720} stroke="#0c2a45" strokeWidth="1.4" strokeDasharray="4,10" />
+        </React.Fragment>
+      ))}
       {stations.map(s => <StationDot key={s.station_id} station={s} onClick={onSelect} selected={selected?.station_id === s.station_id} />)}
-      {Object.entries(STATUS).filter(([k]) => k !== 'unknown').map(([key,val],i) => (<g key={key} transform={`translate(15,${320+i*18})`}><circle cx="6" cy="6" r="4" fill={val.color} /><text x="14" y="10" fill="#8ab4d4" fontSize="9" fontFamily="'DM Mono',monospace">{val.label}</text></g>))}
+      {Object.entries(STATUS).filter(([k]) => k !== 'unknown').map(([key,val],i) => (
+        <g key={key} transform={`translate(28,${620 + i * 28})`}>
+          <circle cx="10" cy="10" r="7" fill={val.color} />
+          <text x="28" y="15" fill="#8ab4d4" fontSize="18" fontFamily="'DM Mono',monospace">{val.label}</text>
+        </g>
+      ))}
     </svg>
   );
 }
