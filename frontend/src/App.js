@@ -137,6 +137,7 @@ export default function App() {
   const [taskPage, setTaskPage]             = useState(null);
   const [loadingStation, setLoadingStation] = useState(false);
   const [lastRefresh, setLastRefresh]       = useState(null);
+  const [healthMeta, setHealthMeta]         = useState(null);
 
   // Assign status from water level if available, else random
   const assignStatus = (s) => {
@@ -157,7 +158,7 @@ export default function App() {
         fetch(`${API}/stations`),
         fetch(`${API}/alerts`),
       ]);
-      const hData = await hRes.json(); setHealth(hData.db);
+      const hData = await hRes.json(); setHealth(hData.db); setHealthMeta(hData);
       if (sRes.ok) { const d = await sRes.json(); setStations(d.map(assignStatus)); }
       if (aRes.ok) { const d = await aRes.json(); setAlerts(d.alerts || []); }
       setLastRefresh(new Date());
@@ -188,6 +189,8 @@ export default function App() {
   }, []);
 
   const statusCounts = stations.reduce((acc,s) => { acc[s.status]=(acc[s.status]||0)+1; return acc; }, {});
+  const isDemoMode = healthMeta?.data_mode === 'demo_fallback';
+  const isEmptyMode = healthMeta?.data_mode === 'empty';
 
   if (loading) return (
     <div className="splash"><OceanCursor />
@@ -220,10 +223,23 @@ export default function App() {
           <button className="refresh-btn" onClick={loadStations} title="Refresh now">↻</button>
         </div>
         <div className="header-right">
+          {isDemoMode && <div className="source-badge demo">Fallback Demo Data</div>}
+          {isEmptyMode && <div className="source-badge empty">Waiting For Data</div>}
           <div className={`db-status ${health?'online':'offline'}`}><span className="db-dot" />{health?'DB Connected':'DB Offline'}</div>
           <div className="badge">CGWB · Problem #25068</div>
         </div>
       </header>
+
+      {isDemoMode && (
+        <div className="source-banner">
+          Public source APIs are unstable right now, so this run is using resilient fallback demo data for a reliable end-to-end walkthrough.
+        </div>
+      )}
+      {isEmptyMode && (
+        <div className="source-banner empty">
+          Data is still loading into the database. Wait for the scraper to finish its first run, then refresh the page.
+        </div>
+      )}
 
       <nav className="nav">
         {[

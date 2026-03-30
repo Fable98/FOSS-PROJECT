@@ -11,7 +11,7 @@ from fastapi.responses import StreamingResponse
 from sqlalchemy import func
 from sqlalchemy.orm import Session
 
-from db.database import get_db
+from db.database import get_db, SessionLocal
 from app.models.station import DWLRReading, Station, Rainfall
 from app.services.analytics import get_fluctuation_analysis, get_fluctuation_analysis_batch, get_anomalies
 from app.services.recharge  import get_recharge_estimate, get_recharge_batch
@@ -27,7 +27,37 @@ router = APIRouter()
 @router.get("/health", tags=["System"])
 def health_check():
     from db.database import check_connection
-    return {"status": "ok", "db": check_connection(), "service": "SubTerra API v1"}
+    db_ok = check_connection()
+    station_count = 0
+    reading_count = 0
+    rainfall_count = 0
+
+    if db_ok:
+        try:
+            with SessionLocal() as db:
+                station_count = db.query(func.count(Station.station_id)).scalar() or 0
+                reading_count = db.query(func.count()).select_from(DWLRReading).scalar() or 0
+                rainfall_count = db.query(func.count()).select_from(Rainfall).scalar() or 0
+        except Exception:
+            station_count = 0
+            reading_count = 0
+            rainfall_count = 0
+
+    data_mode = "live_like"
+    if station_count and station_count < 500:
+        data_mode = "demo_fallback"
+    elif station_count == 0:
+        data_mode = "empty"
+
+    return {
+        "status": "ok",
+        "db": db_ok,
+        "service": "SubTerra API v1",
+        "station_count": station_count,
+        "reading_count": reading_count,
+        "rainfall_count": rainfall_count,
+        "data_mode": data_mode,
+    }
 
 
 @router.get("/stations", tags=["Stations"])

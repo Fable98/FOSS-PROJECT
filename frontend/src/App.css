@@ -132,6 +132,25 @@ body {
 .hstat-lbl { font-family: var(--mono); font-size: 0.6rem; color: var(--text2); letter-spacing: 0.1em; text-transform: uppercase; }
 
 .header-right { display: flex; align-items: center; gap: 1rem; }
+.source-badge {
+  font-family: var(--mono);
+  font-size: 0.65rem;
+  letter-spacing: 0.06em;
+  text-transform: uppercase;
+  padding: 0.35rem 0.7rem;
+  border-radius: 20px;
+  border: 1px solid;
+}
+.source-badge.demo {
+  color: var(--yellow);
+  border-color: #f5c84260;
+  background: #f5c84212;
+}
+.source-badge.empty {
+  color: var(--text2);
+  border-color: var(--border2);
+  background: #0a1f3520;
+}
 .db-status {
   display: flex; align-items: center; gap: 0.4rem;
   font-family: var(--mono); font-size: 0.7rem; letter-spacing: 0.05em;
@@ -154,6 +173,22 @@ body {
 }
 
 @keyframes pulse-dot { 0%,100% { opacity: 1; } 50% { opacity: 0.3; } }
+
+.source-banner {
+  margin: 0.9rem 2rem 0;
+  padding: 0.8rem 1rem;
+  border-radius: var(--radius2);
+  border: 1px solid #f5c84240;
+  background: linear-gradient(90deg, #f5c84212, #061525);
+  color: #f6dea2;
+  font-size: 0.82rem;
+  line-height: 1.5;
+}
+.source-banner.empty {
+  border-color: var(--border2);
+  background: linear-gradient(90deg, #0a1f35, #061525);
+  color: var(--text2);
+}
 
 /* ── Nav ─────────────────────────────────────────────────────── */
 .nav {

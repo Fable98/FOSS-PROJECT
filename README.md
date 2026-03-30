@@ -10,7 +10,7 @@
 ![Docker](https://img.shields.io/badge/docker-ready-2496ED.svg)
 ![Status](https://img.shields.io/badge/status-active-brightgreen.svg)
 
-**A full-stack open-source platform for real-time groundwater monitoring and evaluation using live DWLR sensor data from 5,260 stations across India.**
+**A full-stack groundwater intelligence platform for live-source ingestion, analytics, and a resilient demo fallback when upstream public APIs are unavailable.**
 
 [🚀 Live Demo](#) · [📖 Docs](./docs/) · [🐛 Report Bug](.github/ISSUE_TEMPLATE/bug_report.md) · [✨ Request Feature](.github/ISSUE_TEMPLATE/feature_request.md)
 
@@ -157,18 +157,44 @@ FOSS-PROJECT/
 
 ## ⚡ Quick Start
 
+## Demo Note
+
+For hackathon reliability, SubTerra supports two runtime behaviors:
+
+- `Live-source mode` when India-WRIS / IMD endpoints respond correctly
+- `Fallback demo mode` when those public endpoints fail or rate-limit, so judges can still run the full product flow end-to-end
+
+The UI will explicitly show when fallback demo data is active.
+
 ### Option 1 — Docker (Recommended)
 
 ```bash
 # Clone the repo
-git clone https://github.com/yourusername/subterra.git
-cd subterra
+git clone https://github.com/Fable98/FOSS-PROJECT.git
+cd FOSS-PROJECT
+
+# Create local env file
+cp .env.example .env
 
 # Start everything with one command
-docker-compose up --build
+docker compose up --build
 ```
 
-Then open `http://localhost:3000` in your browser.
+Wait for the first scraper run to finish, then open `http://localhost:3000` in your browser.
+
+You can watch ingestion progress with:
+
+```bash
+docker compose logs -f scraper
+```
+
+The first run is ready when you see lines similar to:
+
+```bash
+Written to TimescaleDB
+Done in ...
+Sleeping 900s …
+```
 
 ---
 
@@ -201,7 +227,7 @@ cp .env.example .env
 # Edit .env with your database credentials
 
 # Run the server
-uvicorn app.main:app --reload
+uvicorn main:app --reload
 ```
 
 Backend runs at `http://localhost:8000`  
@@ -215,7 +241,7 @@ cd frontend
 npm install
 
 # Start development server
-npm run dev
+REACT_APP_API_URL=http://127.0.0.1:8000 npm start
 ```
 
 Frontend runs at `http://localhost:3000`
