@@ -1,0 +1,14 @@
+{
+  "files": {
+    "main.css": "/static/css/main.ec74bb7d.css",
+    "main.js": "/static/js/main.97a50513.js",
+    "static/media/India_outline.svg": "/static/media/India_outline.e8ff03b069b1ab38ceb3d191f37ac6a9.svg",
+    "index.html": "/index.html",
+    "main.ec74bb7d.css.map": "/static/css/main.ec74bb7d.css.map",
+    "main.97a50513.js.map": "/static/js/main.97a50513.js.map"
+  },
+  "entrypoints": [
+    "static/css/main.ec74bb7d.css",
+    "static/js/main.97a50513.js"
+  ]
+}
