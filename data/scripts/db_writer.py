@@ -87,16 +87,20 @@ class DBWriter:
 
         with self.conn.cursor() as cur:
             cur.execute(ddl)
+        # Persist base tables first so a failed hypertable call does not roll them back.
+        self.conn.commit()
+
+        with self.conn.cursor() as cur:
             try:
                 cur.execute(hypertable_sql)
+                self.conn.commit()
                 log.info("TimescaleDB hypertable ensured for dwlr_readings.")
             except psycopg2.errors.UndefinedFunction:
+                self.conn.rollback()
                 log.warning(
                     "TimescaleDB extension not found — "
                     "running as plain PostgreSQL (hypertable skipped)."
                 )
-                self.conn.rollback()
-        self.conn.commit()
         log.info("Schema ensured.")
 
     # ── Station writes ────────────────────────────────────────────────────────
