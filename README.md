@@ -215,42 +215,19 @@ Sleeping 900s …
 
 ---
 
-### Option 2 — Manual Setup
+### Option 2 — Hosted Demo
 
-#### Prerequisites
-Make sure you have these installed:
+Open the deployed frontend directly:
 
-| Tool | Version | Download |
-|------|---------|----------|
-| Python | 3.11+ | [python.org](https://python.org) |
-| Node.js | 18+ | [nodejs.org](https://nodejs.org) |
-| PostgreSQL | 15+ | [postgresql.org](https://postgresql.org) |
-| Git | Latest | [git-scm.com](https://git-scm.com) |
+`https://foss-project-beryl.vercel.app`
 
-#### Backend Setup
-```bash
-cd backend
+Hosted demo notes:
 
-# Create virtual environment
-python -m venv venv
-source venv/bin/activate        # Mac/Linux
-venv\Scripts\activate           # Windows
+- Backend API: `https://foss-project.onrender.com`
+- API docs: `https://foss-project.onrender.com/docs`
+- Current hosted mode uses resilient fallback demo data for reliability.
 
-# Install dependencies
-pip install -r requirements.txt
-
-# Set up environment variables
-cp .env.example .env
-# Edit .env with your database credentials
-
-# Run the server
-uvicorn main:app --reload
-```
-
-Backend runs at `http://localhost:8000`  
-API docs at `http://localhost:8000/docs`
-
-#### Backend on Render
+## ☁️ Deployment Guide
 
 Hosted deployment is optional. For the most reliable hackathon demo, prefer the Docker Compose flow above and treat cloud deployment as a bonus path.
 ```bash
@@ -323,21 +300,6 @@ python scripts/scraper.py --once --source sample
 ```
 
 Note: Render will mark that one-time scraper web service as failed after it exits, but that is expected if the seed completed successfully.
-
-#### Frontend Setup
-```bash
-cd frontend
-
-# Install dependencies
-npm install
-
-# Start development server
-REACT_APP_API_URL=http://127.0.0.1:8000 npm start
-```
-
-Frontend runs at `http://localhost:3000`
-
----
 
 ## 🔌 API Endpoints
 
