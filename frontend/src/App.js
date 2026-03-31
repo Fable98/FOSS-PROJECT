@@ -103,7 +103,7 @@ function IndiaMap({ stations, onSelect, selected }) {
       {Object.entries(STATUS).filter(([k]) => k !== 'unknown').map(([key,val],i) => (
         <g key={key} transform={`translate(28,${620 + i * 28})`}>
           <circle cx="10" cy="10" r="7" fill={val.color} />
-          <text x="28" y="15" fill="#8ab4d4" fontSize="18" fontFamily="'DM Mono',monospace">{val.label}</text>
+          <text x="28" y="15" fill="#8ab4d4" fontSize="15" fontFamily="'DM Mono',monospace">{val.label}</text>
         </g>
       ))}
     </svg>
