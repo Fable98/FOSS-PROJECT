@@ -5,7 +5,9 @@ Loads all settings from environment variables / .env file.
 Never hardcode secrets — always use this file.
 """
 
+import json
 from functools import lru_cache
+from pydantic import field_validator
 from pydantic_settings import BaseSettings
 
 
@@ -51,6 +53,31 @@ class Settings(BaseSettings):
         "http://localhost:3000",    # React dev server (CRA)
         "http://localhost:5173",    # Vite dev server
     ]
+
+    @field_validator("ALLOWED_ORIGINS", mode="before")
+    @classmethod
+    def parse_allowed_origins(cls, value):
+        """
+        Accept either:
+        - a JSON array string: ["https://a.com","https://b.com"]
+        - a comma-separated string: https://a.com,https://b.com
+        - a native list
+        """
+        if isinstance(value, list):
+            return value
+        if isinstance(value, str):
+            raw = value.strip()
+            if not raw:
+                return []
+            if raw.startswith("["):
+                try:
+                    parsed = json.loads(raw)
+                    if isinstance(parsed, list):
+                        return parsed
+                except json.JSONDecodeError:
+                    pass
+            return [item.strip() for item in raw.split(",") if item.strip()]
+        return value
 
     class Config:
         env_file       = ".env"

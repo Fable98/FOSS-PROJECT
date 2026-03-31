@@ -233,6 +233,38 @@ uvicorn main:app --reload
 Backend runs at `http://localhost:8000`  
 API docs at `http://localhost:8000/docs`
 
+#### Backend on Render
+```bash
+# from the repo root
+# Render can use the included render.yaml blueprint, or you can create a Web Service manually
+```
+
+Recommended Render settings:
+
+- Service type: `Web Service`
+- Root directory: `backend`
+- Build command: `pip install -r requirements.txt`
+- Start command: `uvicorn main:app --host 0.0.0.0 --port $PORT`
+
+Required environment variables:
+
+- `APP_ENV=production`
+- `DEBUG=false`
+- `SECRET_KEY=<strong-random-secret>`
+- `DATABASE_URL=<your-render-postgres-external-url>`
+- `ALLOWED_ORIGINS=https://your-frontend.vercel.app`
+
+Optional environment variables:
+
+- `REDIS_URL=<your-render-redis-url>`
+- `DATA_GOV_API_KEY=<if you use it>`
+
+Notes:
+
+- `ALLOWED_ORIGINS` can now be either a JSON array or a comma-separated string.
+- The app attempts TimescaleDB setup on startup, but safely falls back to plain PostgreSQL if the extension is unavailable.
+- After deploy, your API base will be `https://<your-render-service>.onrender.com`.
+
 #### Frontend Setup
 ```bash
 cd frontend
